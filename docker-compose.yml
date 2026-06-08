@@ -1,0 +1,120 @@
+# ══════════════════════════════════════════════
+# KamiSM Docker Compose
+# 单容器启动（推荐）：docker compose -f docker-compose.standalone.yml up -d --build
+# 多容器启动：       docker compose up -d --build
+# ══════════════════════════════════════════════
+
+services:
+  # ─── PostgreSQL ──────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: kamism-postgres
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      POSTGRES_DB: kamism
+      POSTGRES_USER: kamism
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kamism}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kamism -d kamism"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ─── Redis ───────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: kamism-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── RabbitMQ ────────────────────────────────────────
+  rabbitmq:
+    image: rabbitmq:3.13-alpine
+    container_name: kamism-rabbitmq
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      RABBITMQ_DEFAULT_USER: kamism
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-kamism}
+      RABBITMQ_DEFAULT_VHOST: /
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ─── 后端服务（不对外暴露，由 Nginx 代理）────────────
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kamism-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      TZ: Asia/Shanghai
+      MASTER_KEY: ${MASTER_KEY:-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef}
+      DATABASE_URL: postgres://kamism:${POSTGRES_PASSWORD:-kamism}@postgres:5432/kamism
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-kamism}
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-kamism}
+      AMQP_URL: amqp://kamism:${RABBITMQ_PASSWORD:-kamism}@rabbitmq:5672/%2f
+      JWT_SECRET: ${JWT_SECRET:-kamism_bootstrap_jwt_secret_at_least_32_chars_please_change}
+      PORT: 9527
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-Admin@123456}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-KamiSM}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+      RUST_LOG: ${RUST_LOG:-info}
+      UPDATE_WORKDIR: /workspace
+      HOST_PROJECT_DIR: /root/kamism
+    volumes:
+      - uploads_data:/app/uploads
+      - /root/kamism:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    expose:
+      - "9527"
+
+  # ─── 前端（Nginx 反代，统一对外暴露 1420）────────────
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+      args:
+        VITE_API_URL: /api
+    container_name: kamism-web
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "${FRONTEND_PORT:-1420}:80"
+    volumes:
+      - uploads_data:/usr/share/nginx/html/uploads
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  uploads_data:

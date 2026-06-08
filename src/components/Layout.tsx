@@ -1,0 +1,291 @@
+import { useState, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
+import { useAuthStore } from '../stores/auth';
+import { useThemeStore } from '../stores/theme';
+import {
+  LayoutDashboard, Package, Key, Activity, Users,
+  Settings, LogOut, Shield, X, Bell, Megaphone, Sun, Moon, ShieldAlert, Network, BookOpen, Webhook, User, Wallet
+} from 'lucide-react';
+import appIcon from '../assets/app-icon.png';
+import { publicSystemConfig, merchantMessagesApi } from '../lib/api';
+import { useWs } from '../hooks/useWs';
+import { useWsEventStore } from '../stores/wsEvent';
+
+
+function planLabel(plan?: string | null) {
+  if (!plan || plan === 'free') return '免费套餐';
+  return plan === 'pro' ? '专业套餐' : `${plan.toUpperCase()}套餐`;
+}
+
+interface NavItem {
+  hideForAdmin?: boolean;
+  feature?: string;
+  label: string;
+  path: string;
+  icon: React.ReactNode;
+}
+
+const adminNav: NavItem[] = [
+  { label: '总览', path: '/admin/dashboard', icon: <LayoutDashboard size={16} /> },
+  { label: '商户管理', path: '/admin/merchants', icon: <Users size={16} /> },
+  { label: '套餐配置', path: '/admin/plan-configs', icon: <Settings size={16} /> },
+  { label: '消息管理', path: '/admin/messages', icon: <Megaphone size={16} /> },
+];
+
+const merchantNav: NavItem[] = [
+  { label: '总览', path: '/dashboard', icon: <LayoutDashboard size={16} />, hideForAdmin: true, feature: 'dashboard' },
+  { label: '我的应用', path: '/apps', icon: <Package size={16} />, feature: 'apps' },
+  { label: '卡密管理', path: '/cards', icon: <Key size={16} />, feature: 'cards' },
+  { label: '激活记录', path: '/activations', icon: <Activity size={16} />, feature: 'activations' },
+  { label: '商户充值', path: '/recharge', icon: <Wallet size={16} />, feature: 'recharge' },
+  { label: '消息中心', path: '/messages', icon: <Bell size={16} />, feature: 'messages' },
+  { label: '风控管理', path: '/blacklist', icon: <ShieldAlert size={16} />, feature: 'blacklist' },
+  { label: '代理管理', path: '/agents',    icon: <Network size={16} />, hideForAdmin: true, feature: 'agents' },
+  { label: 'API 文档',  path: '/api-docs',  icon: <BookOpen size={16} />, feature: 'api_docs' },
+  { label: 'API 管理',  path: '/api-manage', icon: <Webhook size={16} />, feature: 'api_manage' },
+
+];
+
+export default function Layout({ children }: { children: React.ReactNode }) {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { user, role, logout, refreshProfile } = useAuthStore();
+  const { theme, toggle: toggleTheme } = useThemeStore();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [unread, setUnread] = useState(0);
+  const [noticeQueue, setNoticeQueue] = useState<{id:string;title:string;content:string;created_at:string}[]>([]);
+  const defaultFeatures = ['dashboard','apps','cards','activations','recharge','messages','blacklist','agents','api_docs','api_manage'];
+  const [enabledFeatures, setEnabledFeatures] = useState<string[]>(defaultFeatures);
+  const setLastEvent = useWsEventStore((s) => s.setLastEvent);
+
+  // 监听 merchant-sync 事件（Profile 页修改后触发），刷新侧栏用户信息
+  useEffect(() => {
+    const handler = () => refreshProfile();
+    window.addEventListener('merchant-sync', handler);
+    return () => window.removeEventListener('merchant-sync', handler);
+  }, [refreshProfile]);
+
+  useEffect(() => {
+    refreshProfile();
+  }, [refreshProfile]);
+
+  useEffect(() => {
+    publicSystemConfig.get()
+      .then((res) => {
+        const arr = res.data?.data?.['merchant.enabled_features'];
+        if (Array.isArray(arr)) setEnabledFeatures(arr);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    let layer = document.getElementById('global-custom-bg') as HTMLDivElement | null;
+    if (!layer) {
+      layer = document.createElement('div');
+      layer.id = 'global-custom-bg';
+      document.body.prepend(layer);
+    }
+    const savedBg = localStorage.getItem('kamism_bg_url_' + (role || 'guest'));
+    const bg = user?.background_url || savedBg;
+    if (bg) {
+      const url = bg;
+      layer.style.cssText = `position:fixed;inset:0;z-index:0;pointer-events:none;background-image:url(${url});background-repeat:no-repeat;background-position:center center;background-size:cover;opacity:1;`;
+    } else {
+      layer.style.cssText = 'display:none';
+    }
+  }, [user?.background_url]);
+
+  useEffect(() => {
+    if (role !== 'merchant') return;
+    merchantMessagesApi.unreadCount()
+      .then((res) => { if (res.data.success) setUnread(res.data.data.unread); })
+      .catch(() => {});
+  }, [role, location.pathname]);
+
+  useEffect(() => {
+    if (role !== 'merchant') return;
+    merchantMessagesApi.listNotices({ page: 1, page_size: 5 })
+      .then((res) => {
+        if (!res.data.success) return;
+        const shown: string[] = JSON.parse(localStorage.getItem('shown_notices') || '[]');
+        const pending = (res.data.data as {id:string;title:string;content:string;created_at:string}[])
+          .filter((n) => !shown.includes(n.id));
+        if (pending.length > 0) setNoticeQueue(pending);
+      })
+      .catch(() => {});
+  }, [role]);
+
+  useWs({
+    onMessage: (evt) => {
+      if (role !== 'merchant') return;
+      setLastEvent(evt);
+      if (evt.event === 'new_message') {
+        setUnread((n) => n + 1);
+      }
+    },
+    reconnectInterval: role === 'merchant' ? 3000 : -1,
+  });
+
+  const handleNoticeConfirm = () => {
+    const [current, ...rest] = noticeQueue;
+    if (current) {
+      const shown: string[] = JSON.parse(localStorage.getItem('shown_notices') || '[]');
+      localStorage.setItem('shown_notices', JSON.stringify([...shown, current.id]));
+    }
+    setNoticeQueue(rest);
+  };
+
+  const merchantVisibleNav = merchantNav.filter(n => !n.feature || enabledFeatures.includes(n.feature));
+  const navItems: NavItem[] = role === 'admin'
+    ? [...adminNav, { label: "商户功能", path: "", icon: <span /> }, ...merchantVisibleNav]
+    : merchantVisibleNav;
+
+  const handleLogout = () => {
+    logout();
+    navigate('/login');
+  };
+
+  const handleNav = (path: string) => {
+    if (!path) return;
+    navigate(path);
+    setSidebarOpen(false);
+  };
+
+  const SidebarContent = () => (
+    <>
+      <div style={{ padding: '0 20px 24px', borderBottom: '1px solid var(--border)', marginBottom: 12 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <img src={appIcon} alt="KamiSM" style={{ width: 32, height: 32, borderRadius: 8, objectFit: 'cover' }} />
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 15, letterSpacing: '-0.3px' }}>KamiSM</div>
+              <div style={{ fontSize: 10, color: 'var(--text-muted)', letterSpacing: '0.5px', textTransform: 'uppercase' }}>
+                {role === 'admin' ? '平台管理' : '商户控制台'}
+              </div>
+            </div>
+          </div>
+          <button onClick={() => setSidebarOpen(false)} className="sidebar-close-btn" style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 4, borderRadius: 6, display: 'none' }}>
+            <X size={18} />
+          </button>
+        </div>
+      </div>
+
+      <nav style={{ flex: 1, padding: '0 12px', overflowY: 'auto' }}>
+        {navItems.map((item) => {
+          if (item.hideForAdmin && role === 'admin') return null;
+          if (!item.path) return (
+            <div key={item.label} style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', padding: '12px 12px 4px', textTransform: 'uppercase', letterSpacing: '1px' }}>
+              {item.label}
+            </div>
+          );
+          const active = location.pathname === item.path;
+          return (
+            <button key={item.path} onClick={() => handleNav(item.path)} style={{
+              width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px',
+              borderRadius: 8, marginBottom: 2, background: active ? 'var(--accent-glow)' : 'transparent',
+              color: active ? 'var(--accent)' : 'var(--text-dim)', fontWeight: active ? 700 : 500,
+              fontSize: 13, border: active ? '1px solid rgba(124,106,247,0.2)' : '1px solid transparent',
+              textAlign: 'left', cursor: 'pointer', transition: 'all 0.15s',
+            }}
+              onMouseEnter={e => { if (!active) (e.currentTarget as HTMLButtonElement).style.background = 'var(--bg-hover)'; }}
+              onMouseLeave={e => { if (!active) (e.currentTarget as HTMLButtonElement).style.background = 'transparent'; }}
+            >
+              {item.icon}
+              <span style={{ flex: 1 }}>{item.label}</span>
+              {item.path === '/messages' && unread > 0 && (
+                <span style={{ background: 'var(--accent)', color: '#fff', borderRadius: 10, fontSize: 10, fontWeight: 700, padding: '1px 6px', minWidth: 18, textAlign: 'center', lineHeight: '16px' }}>
+                  {unread > 99 ? '99+' : unread}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </nav>
+
+      <div style={{ padding: '16px 20px', borderTop: '1px solid var(--border)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+          <div style={{ width: 32, height: 32, borderRadius: '50%', overflow: 'hidden', background: 'var(--bg)', flexShrink: 0, border: '2px solid var(--border-light)' }}>
+            {user?.avatar ? (
+              <img src={user.avatar.startsWith('http') || user.avatar.startsWith('/') ? user.avatar : '/uploads/avatars/' + user.avatar} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+            ) : (
+              <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 13, fontWeight: 700, color: '#fff', background: 'linear-gradient(135deg, var(--accent-dim), #6d28d9)' }}>
+                {user?.username?.[0]?.toUpperCase() ?? 'U'}
+              </div>
+            )}
+          </div>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ display:'flex', alignItems:'center', gap:6, minWidth:0 }}><span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{user?.username}</span><span style={{ flexShrink:0, fontSize:10, fontWeight:700, padding:'1px 6px', borderRadius:999, background:(user?.plan && user.plan !== 'free')?'linear-gradient(135deg,#f59e0b,#d97706)':'var(--bg-hover)', color:(user?.plan && user.plan !== 'free')?'#fff':'var(--text-muted)', border:(user?.plan || user?.plan === 'free' || true)?(user?.plan && user.plan !== 'free'?'none':'1px solid var(--border)'):'1px solid var(--border)' }}>{planLabel(user?.plan)}</span></div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4 }}>
+              {role === 'admin' && <Shield size={10} />}
+              {role === 'admin' ? '管理员' : '商户'}
+
+            </div>
+          </div>
+        </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 6 }}>
+          <button className="btn btn-ghost" style={{ justifyContent: 'center', fontSize: 12 }} onClick={() => handleNav('/profile')}>
+            <User size={13} /> 我的
+          </button>
+          <button className="btn btn-ghost" style={{ justifyContent: 'center', fontSize: 12 }} onClick={() => handleNav('/settings')}>
+            <Settings size={13} /> 设置
+          </button>
+          <button className="btn btn-ghost" style={{ justifyContent: 'center', fontSize: 12 }} onClick={toggleTheme}>
+            {theme === 'dark' ? <Sun size={13} /> : <Moon size={13} />}
+            {theme === 'dark' ? '亮色' : '暗色'}
+          </button>
+          <button className="btn btn-ghost" style={{ justifyContent: 'center', fontSize: 12, color: 'var(--danger)' }} onClick={handleLogout}>
+            <LogOut size={13} /> 退出
+          </button>
+        </div>
+      </div>
+    </>
+  );
+
+  return (
+    <div style={{ display: 'flex', height: '100vh', overflow: 'hidden', position: 'relative', zIndex: 1 }}>
+      <header className="mobile-header">
+        <div className="mobile-header-logo">
+          <img src={appIcon} alt="KamiSM" style={{ width: 28, height: 28, borderRadius: 7 }} />
+          KamiSM
+        </div>
+        <button className="hamburger" onClick={() => setSidebarOpen(true)} aria-label="打开菜单">
+          <span /><span /><span />
+        </button>
+      </header>
+      <div className={`sidebar-overlay${sidebarOpen ? ' open' : ''}`} onClick={() => setSidebarOpen(false)} />
+      <aside className={`layout-sidebar${sidebarOpen ? ' open' : ''}`} style={{ width: 'var(--sidebar-w)', minWidth: 'var(--sidebar-w)', background: 'var(--bg-card)', borderRight: '1px solid var(--border)', display: 'flex', flexDirection: 'column', padding: '20px 0', overflowY: 'auto' }}>
+        <SidebarContent />
+      </aside>
+      <main className="layout-main fade-in" style={{ flex: 1, overflow: 'auto', padding: '32px 36px', background: 'transparent' }}>
+        {children}
+      </main>
+      {noticeQueue.length > 0 && (
+        <div className="modal-overlay" style={{ zIndex: 1050 }}>
+          <div className="modal" style={{ maxWidth: 640, width: '90vw' }} onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 8 }}>
+              <div style={{ width: 40, height: 40, borderRadius: 10, flexShrink: 0, background: 'rgba(124,106,247,0.12)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                <Megaphone size={20} style={{ color: 'var(--accent)' }} />
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.6px', textTransform: 'uppercase', color: 'var(--text-muted)', marginBottom: 3 }}>平台公告</div>
+                <h2 style={{ fontSize: 17, fontWeight: 800, margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{noticeQueue[0].title}</h2>
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 16, paddingLeft: 52 }}>
+              {new Date(noticeQueue[0].created_at).toLocaleString('zh-CN')}
+            </div>
+            <div style={{ fontSize: 14, color: 'var(--text-dim)', lineHeight: 1.9, whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginBottom: 24, maxHeight: 360, overflowY: 'auto', padding: '14px 16px', background: 'var(--bg)', borderRadius: 8, border: '1px solid var(--border)' }}>
+              {noticeQueue[0].content}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              {noticeQueue.length > 1 ? <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>还有 {noticeQueue.length - 1} 条公告未读</span> : <span />}
+              <button className="btn btn-primary" onClick={handleNoticeConfirm}>
+                {noticeQueue.length > 1 ? '下一条 →' : '我已知晓'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
