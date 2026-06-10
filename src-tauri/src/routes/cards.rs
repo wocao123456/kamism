@@ -27,6 +27,8 @@ pub struct GenerateCardsRequest {
     pub prefix: Option<String>,
     pub segment_count: Option<usize>,
     pub segment_len: Option<usize>,
+    pub enable_ip_limit: Option<bool>,
+    pub max_ips: Option<i32>,
 }
 
 #[derive(Deserialize)]
@@ -96,7 +98,7 @@ async fn list_cards(
     let page_size = q.page_size.unwrap_or(20).min(100);
     let offset = (page - 1) * page_size;
 
-    const CARD_COLS: &str = "id, app_id, merchant_id, code_encrypted, duration_days, max_devices, status, note, created_at, activated_at, expires_at";
+    const CARD_COLS: &str = "id, app_id, merchant_id, code_encrypted, duration_days, max_devices, status, note, created_at, activated_at, expires_at, enable_ip_limit, max_ips";
 
     #[derive(sqlx::FromRow)]
     struct CardWithTotal {
@@ -107,6 +109,8 @@ async fn list_cards(
         code: String,
         duration_days: i32,
         max_devices: i32,
+        enable_ip_limit: bool,
+        max_ips: i32,
         status: String,
         note: Option<String>,
         created_at: chrono::DateTime<chrono::Utc>,
@@ -130,6 +134,7 @@ async fn list_cards(
     let mut cards: Vec<Card> = rows.into_iter().map(|r| Card {
         id: r.id, app_id: r.app_id, merchant_id: r.merchant_id,
         code: r.code, duration_days: r.duration_days, max_devices: r.max_devices,
+        enable_ip_limit: r.enable_ip_limit, max_ips: r.max_ips,
         status: r.status, note: r.note, created_at: r.created_at,
         activated_at: r.activated_at, expires_at: r.expires_at,
     }).collect();
@@ -248,10 +253,10 @@ async fn generate_cards(
     };
 
     if body.count == 0 || body.count > 1000 {
-        return Json(json!({"success": false, "message": "生成数量需在 1-1000 之间"}));
+        return Json(json!({"success": false, "message": "生���数量需在 1-1000 之间"}));
     }
     if body.duration_days < 0 {
-        return Json(json!({"success": false, "message": "有效天数必须大于0"}));
+        return Json(json!({"success": false, "message": "有效天数��须大于0"}));
     }
     if body.max_devices < 0 {
         return Json(json!({"success": false, "message": "设备数量需在 1-100 之间"}));
@@ -352,17 +357,17 @@ async fn generate_cards(
     }
 
     let mut params_sql = String::new();
-    let base = 7usize;
+    let base = 9usize;
     for i in 0..encrypted_codes.len() {
         let n = i * base;
         if i > 0 { params_sql.push(','); }
         params_sql.push_str(&format!(
-            "(${},${},${},${},${},${},${})",
-            n+1, n+2, n+3, n+4, n+5, n+6, n+7
+            "(${},${},${},${},${},${},${},${},${})",
+            n+1, n+2, n+3, n+4, n+5, n+6, n+7, n+8, n+9
         ));
     }
     let sql = format!(
-        "INSERT INTO cards (app_id, merchant_id, code_encrypted, code_hash, duration_days, max_devices, note) VALUES {} RETURNING id",
+        "INSERT INTO cards (app_id, merchant_id, code_encrypted, code_hash, duration_days, max_devices, note, enable_ip_limit, max_ips) VALUES {} RETURNING id",
         params_sql
     );
 
@@ -375,7 +380,9 @@ async fn generate_cards(
             .bind(code_hash)
             .bind(body.duration_days)
             .bind(body.max_devices)
-            .bind(&body.note);
+            .bind(&body.note)
+            .bind(body.enable_ip_limit.unwrap_or(false))
+            .bind(body.max_ips.unwrap_or(1));
     }
 
     match q.fetch_all(&state.pool).await {

@@ -73,9 +73,18 @@ async fn install_complete(State(state): State<AppState>, Json(body): Json<Instal
 }
 
 
+fn default_merchant_features() -> Value {
+    json!(["dashboard","apps","cards","activations","recharge","messages","blacklist","agents","api_docs","api_manage"])
+}
 async fn public_config(State(state): State<AppState>) -> Json<Value> {
-    let features = get_config(&state.pool, "merchant.enabled_features", json!([])).await;
-    Json(json!({"success": true, "data": {"merchant.enabled_features": features}}))
+    let features = get_config(&state.pool, "merchant.enabled_features", default_merchant_features()).await;
+    let merchant_page_enabled = get_config(&state.pool, "merchant.page_enabled", json!(true)).await.as_bool().unwrap_or(true);
+    let register_enabled = get_config(&state.pool, "auth.register_enabled", json!(true)).await.as_bool().unwrap_or(true);
+    Json(json!({"success": true, "data": {
+        "merchant.enabled_features": features,
+        "merchant.page_enabled": merchant_page_enabled,
+        "auth.register_enabled": register_enabled
+    }}))
 }
 
 async fn list_config(State(state): State<AppState>, Extension(claims): Extension<Claims>) -> Response {
@@ -87,7 +96,7 @@ async fn list_config(State(state): State<AppState>, Extension(claims): Extension
 
 async fn save_config(State(state): State<AppState>, Extension(claims): Extension<Claims>, Json(body): Json<SaveConfigRequest>) -> Response {
     if let Some(r) = admin_guard(&claims) { return r; }
-    let allowed = ["merchant.enabled_features", "mail.smtp"];
+    let allowed = ["merchant.enabled_features", "merchant.page_enabled", "auth.register_enabled", "mail.smtp"];
     if !allowed.contains(&body.key.as_str()) { return Json(json!({"success": false, "message": "不允许修改该配置"})).into_response(); }
     let _ = sqlx::query("INSERT INTO system_config(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=$2,updated_at=NOW()").bind(&body.key).bind(&body.value).execute(&state.pool).await;
     Json(json!({"success": true, "message": "保存成功"})).into_response()

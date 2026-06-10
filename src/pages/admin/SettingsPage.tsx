@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
-import { Upload, Trash2, Save, LayoutDashboard, Package, Key, Activity, Wallet, Bell, ShieldAlert, Network, BookOpen, Webhook } from 'lucide-react';
+import { Upload, Trash2, Save, LayoutDashboard, Package, Key, Activity, Wallet, Bell, ShieldAlert, Network, BookOpen, Webhook, Store, UserPlus } from 'lucide-react';
 import { useAuthStore } from '../../stores/auth';
 import { adminApi } from '../../lib/api';
 
@@ -46,6 +46,8 @@ export default function SettingsPage() {
   const [oauthUserPath, setOauthUserPath] = useState('/api.php');
   const [enabledTypes, setEnabledTypes] = useState<string[]>([]);
   const [merchantFeatures, setMerchantFeatures] = useState<string[]>(MERCHANT_FEATURES.map(([k]) => k));
+  const [merchantPageEnabled, setMerchantPageEnabled] = useState(true);
+  const [registerEnabled, setRegisterEnabled] = useState(true);
   const [smtp, setSmtp] = useState<any>({ enabled:false, smtp_host:'', smtp_port:'465', smtp_user:'', smtp_pass:'', smtp_from_name:'KamiSM', smtp_from_email:'' });
 
   const mailEnabled = Boolean(smtp.enabled || (smtp.smtp_host && smtp.smtp_user && smtp.smtp_from_email));
@@ -88,7 +90,11 @@ export default function SettingsPage() {
       setTimeout(() => checkForUpdates(), 800);
       adminApi.getSystemConfig().then((res) => {
         const data = res.data?.data || {};
-        setMerchantFeatures(MERCHANT_FEATURES.map(([k]) => k));
+        const features = data['merchant.enabled_features'];
+        if (Array.isArray(features)) setMerchantFeatures(features);
+        else setMerchantFeatures(MERCHANT_FEATURES.map(([k]) => k));
+        setMerchantPageEnabled(data['merchant.page_enabled'] !== false);
+        setRegisterEnabled(data['auth.register_enabled'] !== false);
         if (data['mail.smtp']) setSmtp((prev:any) => ({ ...prev, ...data['mail.smtp'] }));
       }).catch(() => {});
     }
@@ -133,6 +139,7 @@ export default function SettingsPage() {
   return <div style={{ maxWidth: 520, margin: '0 auto' }}>
     <h2 style={{ fontSize: 20, fontWeight: 800, marginBottom: 24 }}>设置</h2>
 
+    <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-muted)", marginBottom: 10, textTransform: "uppercase", letterSpacing: 1 }}>基础设置</div>
     <div className="card" style={{ marginBottom:16 }}>
       <div style={{ fontSize:14, fontWeight:700, color:'var(--text)', marginBottom:12 }}>自定义背景</div>
       <div style={{ width:'100%', height:120, borderRadius:8, background:bgUrl ? `url(${bgUrl}) center/contain no-repeat` : 'var(--bg)', border:'1px dashed var(--border)', marginBottom:12, display:'flex', alignItems:'center', justifyContent:'center', color:'var(--text-dim)', fontSize:13 }}>{bgUrl ? '' : '暂无背景图'}</div>
@@ -140,6 +147,22 @@ export default function SettingsPage() {
       <input ref={fileRef} type="file" accept="image/*" style={{ display:'none' }} onChange={handleBgUpload}/><div style={{ fontSize:12, color:'var(--text-dim)', marginTop:8 }}>背景图将保存到服务器磁盘，换系统也能保留</div>
     </div>
 
+    {isAdmin && <div style={{ fontSize: 13, fontWeight: 700, color: "var(--text-muted)", marginBottom: 10, marginTop: 24, textTransform: "uppercase", letterSpacing: 1 }}>管理员设置</div>}
+    {isAdmin && <div className="card" style={{ marginBottom:16 }}>
+      <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))', gap:12 }}>
+        <div style={{ border:'1px solid var(--border)', borderRadius:12, padding:14, background:'var(--bg-card)' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:8, fontSize:14, fontWeight:800, color:'var(--text)', marginBottom:8 }}><Store size={16}/> 商户页面开关</div>
+          <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.7, marginBottom:12 }}>打开后商户可正常使用后台；关闭后商户登录只显示维护提示，请联系管理员。</div>
+          <label style={{ display:'flex', alignItems:'center', gap:10, fontSize:13 }}><input type="checkbox" checked={merchantPageEnabled} onChange={e=>setMerchantPageEnabled(e.target.checked)} style={{ width:16, height:16, accentColor:'var(--accent)' }}/> {merchantPageEnabled ? '已开启商户页面' : '已关闭商户页面'}</label>
+        </div>
+        <div style={{ border:'1px solid var(--border)', borderRadius:12, padding:14, background:'var(--bg-card)' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:8, fontSize:14, fontWeight:800, color:'var(--text)', marginBottom:8 }}><UserPlus size={16}/> 注册开关</div>
+          <div style={{ fontSize:12, color:'var(--text-muted)', lineHeight:1.7, marginBottom:12 }}>打开后允许新商户注册；关闭后注册接口会拒绝提交，不再开放注册。</div>
+          <label style={{ display:'flex', alignItems:'center', gap:10, fontSize:13 }}><input type="checkbox" checked={registerEnabled} onChange={e=>setRegisterEnabled(e.target.checked)} style={{ width:16, height:16, accentColor:'var(--accent)' }}/> {registerEnabled ? '已开放注册' : '已关闭注册'}</label>
+        </div>
+      </div>
+      <button className="btn btn-primary" style={{ marginTop:14, width:'100%', justifyContent:'center' }} onClick={async()=>{try{const results=await Promise.all([adminApi.saveSystemConfig('merchant.page_enabled', merchantPageEnabled), adminApi.saveSystemConfig('auth.register_enabled', registerEnabled)]); if(results.every(r=>r.data.success))toast.success('页面开关已保存'); else toast.error('部分配置保存失败')}catch{toast.error('保存失败')}}}><Save size={14}/> 保存页面开关</button>
+    </div>}
     {isAdmin && <div className="card" style={{ marginBottom:16 }}>
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:12, gap:12 }}><div><div style={{ fontSize:14, fontWeight:700, color:'var(--text)' }}>商户功能控制</div><div style={{ fontSize:12, color:'var(--text-muted)', marginTop:3 }}>控制商户侧栏可见功能</div></div><button className="btn btn-primary" onClick={async()=>{try{const res=await adminApi.saveSystemConfig('merchant.enabled_features', merchantFeatures); if(res.data.success)toast.success('商户功能已保存'); else toast.error(res.data.message||'保存失败')}catch{toast.error('保存失败')}}}><Save size={14}/> 保存</button></div>
       <div style={{ fontSize:12, color:'var(--text-muted)', marginBottom:8 }}>启用类型</div>

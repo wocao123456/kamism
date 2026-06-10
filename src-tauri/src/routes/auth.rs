@@ -1,15 +1,25 @@
 /// 登录/注册成功时自动记录当前 Git 版本到 system_versions，避免手动设置
 async fn record_install_version(pool: &sqlx::PgPool) {
+    let project_dir = std::env::var("UPDATE_WORKDIR")
+        .or_else(|_| std::env::var("HOST_PROJECT_DIR"))
+        .unwrap_or_else(|_| "/workspace".to_string());
     let hash = std::process::Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
-        .current_dir("/root/kamism")
-        .output().ok().and_then(|o| String::from_utf8(o.stdout).ok()).map(|s| s.trim().to_string()).unwrap_or_else(|| "unknown".to_string());
+        .current_dir(&project_dir)
+        .output().ok().and_then(|o| String::from_utf8(o.stdout).ok()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "unknown".to_string());
     let msg = std::process::Command::new("git")
         .args(["log", "-1", "--pretty=%s", "HEAD"])
-        .current_dir("/root/kamism")
-        .output().ok().and_then(|o| String::from_utf8(o.stdout).ok()).map(|s| s.trim().to_string()).unwrap_or_else(|| "unknown".to_string());
-    let changelog = std::fs::read_to_string("/root/kamism/CHANGELOG.md").unwrap_or_default();
-    let version = changelog.lines().find(|l| l.starts_with("## [")).unwrap_or("unknown version").trim().to_string();
+        .current_dir(&project_dir)
+        .output().ok().and_then(|o| String::from_utf8(o.stdout).ok()).map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).unwrap_or_else(|| "unknown".to_string());
+    let changelog = [
+        format!("{}/CHANGELOG.md", project_dir),
+        "/app/CHANGELOG.md".to_string(),
+        "/root/kamism/CHANGELOG.md".to_string(),
+    ]
+    .into_iter()
+    .find_map(|p| std::fs::read_to_string(p).ok())
+    .unwrap_or_default();
+    let version = changelog.lines().find(|l| l.starts_with("## [")).unwrap_or("## [未知版本]").trim().to_string();
     let _ = sqlx::query(
         "INSERT INTO system_versions(id, version_text, commit_hash, commit_message) VALUES(1,$1,$2,$3)
          ON CONFLICT(id) DO UPDATE SET version_text=EXCLUDED.version_text, commit_hash=EXCLUDED.commit_hash, commit_message=EXCLUDED.commit_message, updated_at=NOW()")
@@ -92,6 +102,10 @@ async fn send_code(
     State(state): State<AppState>,
     Json(body): Json<SendCodeRequest>,
 ) -> Json<Value> {
+    let register_enabled = sqlx::query_as::<_, (serde_json::Value,)>("SELECT value FROM system_config WHERE key=$1").bind("auth.register_enabled").fetch_optional(&state.pool).await.ok().flatten().and_then(|v| v.0.as_bool()).unwrap_or(true);
+    if !register_enabled {
+        return Json(json!({"success": false, "message": "注册暂未开放"}));
+    }
     if !body.email.contains('@') {
         return Json(json!({"success": false, "message": "邮箱格式不正确"}));
     }
@@ -135,6 +149,17 @@ async fn register(
     State(state): State<AppState>,
     Json(body): Json<RegisterRequest>,
 ) -> Json<Value> {
+    let register_enabled = sqlx::query_as::<_, (serde_json::Value,)>("SELECT value FROM system_config WHERE key=$1")
+        .bind("auth.register_enabled")
+        .fetch_optional(&state.pool)
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.0.as_bool())
+        .unwrap_or(true);
+    if !register_enabled {
+        return Json(json!({"success": false, "message": "注册暂未开放"}));
+    }
     if !body.email.contains('@') {
         return Json(json!({"success": false, "message": "邮箱格式不正确"}));
     }

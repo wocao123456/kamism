@@ -16,5 +16,7 @@ pub struct Card {
     pub created_at: DateTime<Utc>,
     pub activated_at: Option<DateTime<Utc>>,
     pub expires_at: Option<DateTime<Utc>>,
+    pub enable_ip_limit: bool,
+    pub max_ips: i32,
 }
 

@@ -397,7 +397,6 @@ async fn activate(
         Some((id,)) => id,
         None => return Json(json!({"success": false, "message": "无效的 API Key"})),
     };
-
     if let Some(blocked) = check_blocked(&state, &ip, &body.device_id).await {
         return blocked;
     }
@@ -729,6 +728,14 @@ async fn verify(
         None => return Json(json!({"success": false, "message": "卡密不存在"})),
     };
 
+    // IP限制校验
+    if card.enable_ip_limit && card.max_ips > 0 {
+        let bound: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM card_ip_bindings WHERE card_id = $1 AND ip_address = $2").bind(card.id).bind(&client_ip).fetch_one(&state.pool).await.unwrap_or((0,));
+        if bound.0 == 0 {
+            return Json(json!({"success": false, "valid": false, "message": "当前IP无权使用该卡密"}));
+        }
+    }
+
     if let Some(exp) = card.expires_at {
         if Utc::now() > exp {
             let _ = sqlx::query("UPDATE cards SET status = 'expired' WHERE id = $1")
@@ -908,6 +915,7 @@ async fn unbind(
                     .await
                     .unwrap_or((0,));
             if remaining.0 == 0 {
+            sqlx::query("DELETE FROM card_ip_bindings WHERE card_id = $1").bind(card_id).execute(&state.pool).await.ok();
                 let _ = sqlx::query(
                     "UPDATE cards SET status = 'unused', activated_at = NULL, expires_at = NULL WHERE id = $1",
                 )

@@ -56,6 +56,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [noticeQueue, setNoticeQueue] = useState<{id:string;title:string;content:string;created_at:string}[]>([]);
   const defaultFeatures = ['dashboard','apps','cards','activations','recharge','messages','blacklist','agents','api_docs','api_manage'];
   const [enabledFeatures, setEnabledFeatures] = useState<string[]>(defaultFeatures);
+  const [merchantPageEnabled, setMerchantPageEnabled] = useState(true);
   const setLastEvent = useWsEventStore((s) => s.setLastEvent);
 
   // 监听 merchant-sync 事件（Profile 页修改后触发），刷新侧栏用户信息
@@ -72,8 +73,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     publicSystemConfig.get()
       .then((res) => {
-        const arr = res.data?.data?.['merchant.enabled_features'];
+        const data = res.data?.data || {};
+        const arr = data['merchant.enabled_features'];
         if (Array.isArray(arr)) setEnabledFeatures(arr);
+        else setEnabledFeatures(defaultFeatures);
+        setMerchantPageEnabled(data['merchant.page_enabled'] !== false);
       })
       .catch(() => {});
   }, []);
@@ -126,7 +130,17 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     reconnectInterval: role === 'merchant' ? 3000 : -1,
   });
 
-  const handleNoticeConfirm = () => {
+    if (role === 'merchant' && !merchantPageEnabled) {
+    return <div style={{ minHeight:'100vh', display:'flex', alignItems:'center', justifyContent:'center', padding:24, background:'var(--bg)' }}>
+      <div className="card" style={{ maxWidth:420, width:'100%', textAlign:'center' }}>
+        <div style={{ fontSize:20, fontWeight:800, color:'var(--text)', marginBottom:10 }}>正在维护</div>
+        <div style={{ fontSize:14, color:'var(--text-muted)', lineHeight:1.7 }}>商户页面暂时关闭，请联系管理员。</div>
+        <button className="btn btn-primary" style={{ marginTop:18 }} onClick={logout}>退出登录</button>
+      </div>
+    </div>;
+  }
+
+const handleNoticeConfirm = () => {
     const [current, ...rest] = noticeQueue;
     if (current) {
       const shown: string[] = JSON.parse(localStorage.getItem('shown_notices') || '[]');

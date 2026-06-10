@@ -53,6 +53,42 @@ fn first_heading(md: &str) -> String {
         .trim()
         .to_string()
 }
+fn read_local_changelog() -> String {
+    [
+        format!("{}/CHANGELOG.md", workdir()),
+        format!("{}/CHANGELOG.md", hostdir()),
+        "/app/CHANGELOG.md".to_string(),
+        "CHANGELOG.md".to_string(),
+    ]
+    .into_iter()
+    .find_map(|p| fs::read_to_string(p).ok())
+    .unwrap_or_default()
+}
+fn is_placeholder(value: &str) -> bool {
+    let v = value.trim().to_lowercase();
+    v.is_empty()
+        || v == "unknown"
+        || v == "unknown version"
+        || v == "local"
+        || v == "local version"
+        || v == "local install version"
+        || v.contains("未知版本")
+}
+fn clean_installed(
+    installed: Option<(String, String, String)>,
+    fallback_version: String,
+    fallback_hash: String,
+    fallback_msg: String,
+) -> (String, String, String) {
+    match installed {
+        Some((version, hash, msg)) => (
+            if is_placeholder(&version) { fallback_version } else { version },
+            if is_placeholder(&hash) { fallback_hash } else { hash },
+            if is_placeholder(&msg) { fallback_msg } else { msg },
+        ),
+        None => (fallback_version, fallback_hash, fallback_msg),
+    }
+}
 
 fn first_section(md: &str) -> String {
     let mut out = Vec::new();
@@ -109,8 +145,7 @@ async fn update_status(
     let latest = sh("git rev-parse --short origin/main").unwrap_or_else(|_| "unknown".into());
     let latest_msg = sh("git log -1 --pretty=%s origin/main").unwrap_or_default();
 
-    let local_changelog =
-        fs::read_to_string(format!("{}/CHANGELOG.md", workdir())).unwrap_or_default();
+    let local_changelog = read_local_changelog();
     let remote_changelog =
         sh("git show origin/main:CHANGELOG.md").unwrap_or_else(|_| local_changelog.clone());
 
@@ -126,9 +161,12 @@ async fn update_status(
     let fallback_current_msg = sh("git log -1 --pretty=%s HEAD").unwrap_or_default();
     let fallback_current_ver = first_heading(&local_changelog);
 
-    let (current_version, current_hash, current_msg) = installed.unwrap_or_else(|| (
-        fallback_current_ver, fallback_current_hash, fallback_current_msg
-    ));
+    let (current_version, current_hash, current_msg) = clean_installed(
+        installed,
+        fallback_current_ver,
+        fallback_current_hash,
+        fallback_current_msg,
+    );
 
     let has_update = current_hash != latest;
     let running = fs::read_to_string(format!("{}/.auto_update_running", workdir()))

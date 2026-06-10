@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS system_config (
 
 INSERT INTO system_config (key, value) VALUES
     ('install.completed', 'false'::jsonb),
-    ('merchant.enabled_features', '["dashboard","apps","cards","activations","messages","blacklist","agents","api_docs","api_manage"]'::jsonb),
+    ('merchant.enabled_features', '["dashboard","apps","cards","activations","recharge","messages","blacklist","agents","api_docs","api_manage"]'::jsonb),
     ('mail.smtp', '{}'::jsonb)
 ON CONFLICT (key) DO NOTHING;
 
