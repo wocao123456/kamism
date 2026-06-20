@@ -257,7 +257,7 @@ async fn update_status(
     let current_version = if remote_version_is_newer(&db_version, &local_current_version) {
         db_version
     } else {
-        local_current_version
+        local_current_version.clone()
     };
     let current_hash = if &current_version == &local_current_version {
         fallback_current_hash
