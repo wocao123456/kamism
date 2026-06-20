@@ -10,6 +10,8 @@
 - **侧栏版本号硬编码修复**：侧栏 Logo 旁版本号从硬编码 `v1.5.0` 改为动态读取 `/CHANGELOG.md` 第一个版本标题，更新后自动显示新版本。
 - **设置页兜底版本号修复**：设置页「当前版本」兜底从硬编码 `1.5.0` 改为 `1.5.1`。
 - **修复后端版本选择逻辑反转**：`system_update.rs` 中 `current_version` 取值逻辑反了——当 CHANGELOG 版本（v2.0.3）比 DB 记录（v1.5.0）新时，错误地选择了 DB 旧版本，导致设置页刷新后版本号变回 `v1.5.0`。现改为优先取较新的一方：CHANGELOG 版本 > DB 版本时以 CHANGELOG 为准。
+- **修复 API 文档移动端弹层宽度撑满问题**：`ApiDocs.tsx` 内联 style 在 `max-width:600px` 下用 `width:min(600px,96vw)!important` 覆盖 App.css 中 `width:100vw!important` 的全宽规则，弹层不再强制占满屏幕宽度。
+- **修复管理后台/商户后台 balance 列不存在问题**：`merchants` 表新增 `balance NUMERIC(14,4)` 列，并创建 `balance_records` 余额流水表，配合后端余额赠送/查询功能。新增 migration `023_merchant_balance.sql`。
 ### 优化
 - **更新日志弹窗暗黑模式适配**：弹窗背景、文字、内容区、关闭按钮全部改用 CSS 变量（`var(--c)`、`var(--t1)`、`var(--t2)`、`var(--fc)`、`var(--bd)`），暗黑模式下不再白底灰字。
 - **后端版本判断更严谨**：新增 `should_show_update()` 函数，收集所有可解析的当前版本（数据库记录 + 本地 CHANGELOG），远程版本必须大于所有当前版本才提示更新。
