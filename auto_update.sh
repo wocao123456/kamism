@@ -7,7 +7,7 @@ RUNNING=/root/kamism/.auto_update_running
 
 if [ -f "$RUNNING" ]; then
   old_pid=$(cat "$RUNNING" 2>/dev/null || true)
-  if [ -n "${old_pid:-}" ] && kill -0 "$old_pid" 2>/dev/null; then
+  if [ -n "${old_pid:-}" ] && [ "$old_pid" != "0" ] && kill -0 "$old_pid" 2>/dev/null; then
     echo "[$(date)] update already running: $old_pid" >> "$LOG"
     exit 0
   fi

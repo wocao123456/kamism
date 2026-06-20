@@ -296,7 +296,7 @@ async fn update_status(
             .unwrap_or_default()
             .trim()
             .to_string();
-        if !pid.is_empty() && pid != "1" {
+        if !pid.is_empty() && pid != "1" && pid != "0" {
             sh(&format!("kill -0 {} 2>/dev/null && echo yes || echo no", pid))
                 .unwrap_or_default()
                 .contains("yes")
@@ -347,7 +347,7 @@ async fn apply_update(Extension(claims): Extension<Claims>) -> Response {
     }
     // 立即写入 running 标记，防止前端轮询时状态返回 idle 导致误判"更新完成"
     let marker = format!("{}/.auto_update_running", workdir());
-    let _ = fs::write(&marker, "1");
+    let _ = fs::write(&marker, "0");
     // 立即清空旧日志，让前端看到全新的日志流
     let _ = fs::write(&format!("{}/.auto_update_cron.log", workdir()), "update start\n");
     let cmd = format!(
