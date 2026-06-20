@@ -293,7 +293,7 @@ const currentVersion = versionLabel(rawVersion).replace(/^v/i,'') || '未知';
             )}
             <div className="hero-actions-k" style={{display:'flex',gap:14,justifyContent:'center',flexWrap:'wrap'}}>
               <button className="pill-btn" onClick={()=>checkForUpdates()} disabled={checking} style={{background:'#3da0f5',color:'#fff',padding:'0 30px'}}><RefreshCw className={`refresh-icon ${checking?'spin':''}`} size={18}/>{checking?'检查中...':'检查更新'}</button>
-              {displayHasUpdate && (
+              {(displayHasUpdate || applying) && (
                 <button className="pill-btn" onClick={()=>{ if(applying){ setProgressVisible(true); } else { applyUpdate(); } }} disabled={false} style={{background:applying?'#f59e0b':'#10b981',color:'#fff',padding:'0 30px',cursor:'pointer'}}>
                   {applying ? <><Loader2 className="spin" size={18}/> 更新中，点击查看进度</> : <><Download size={18}/> 一键更新</>}
                 </button>
