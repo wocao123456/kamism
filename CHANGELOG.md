@@ -9,9 +9,14 @@
 - **修复 `sh()` 返回值编译错误**：`system_update.rs` 中 `sh().contains("yes")` 改为 `sh().unwrap_or_default().contains("yes")`，修复 `Result<String, String>` 不能直接调用 `.contains()` 的编译错误。
 - **侧栏版本号硬编码修复**：侧栏 Logo 旁版本号从硬编码 `v1.5.0` 改为动态读取 `/CHANGELOG.md` 第一个版本标题，更新后自动显示新版本。
 - **设置页兜底版本号修复**：设置页「当前版本」兜底从硬编码 `1.5.0` 改为 `1.5.1`。
+- **修复后端版本选择逻辑反转**：`system_update.rs` 中 `current_version` 取值逻辑反了——当 CHANGELOG 版本（v2.0.3）比 DB 记录（v1.5.0）新时，错误地选择了 DB 旧版本，导致设置页刷新后版本号变回 `v1.5.0`。现改为优先取较新的一方：CHANGELOG 版本 > DB 版本时以 CHANGELOG 为准。
 ### 优化
 - **更新日志弹窗暗黑模式适配**：弹窗背景、文字、内容区、关闭按钮全部改用 CSS 变量（`var(--c)`、`var(--t1)`、`var(--t2)`、`var(--fc)`、`var(--bd)`），暗黑模式下不再白底灰字。
 - **后端版本判断更严谨**：新增 `should_show_update()` 函数，收集所有可解析的当前版本（数据库记录 + 本地 CHANGELOG），远程版本必须大于所有当前版本才提示更新。
+- **CHANGELOG.md 构建时拷贝**：`Dockerfile.web` 和 `Dockerfile.standalone` 新增 `COPY CHANGELOG.md /usr/share/nginx/html/CHANGELOG.md`。
+- **nginx CHANGELOG.md 无缓存**：新增 location 配置 `Cache-Control: no-store`。
+- **Layout.tsx 版本号多级兜底**：API → `/CHANGELOG.md` → localStorage 缓存，任一环节失败自动降级。
+- **SettingsPage 更新弹窗完善**：实时日志显示修复、失败状态正确判断、暗黑模式适配。
 ---
 ## [v1.5.0] - 2026-06-10
 
