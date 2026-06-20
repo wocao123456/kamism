@@ -49,6 +49,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const defaultFeatures = ['dashboard','apps','cards','activations','recharge','messages','blacklist','agents','api_docs','api_manage'];
   const [enabledFeatures, setEnabledFeatures] = useState<string[]>(defaultFeatures);
   const [merchantPageEnabled, setMerchantPageEnabled] = useState(true);
+  const [appVersion, setAppVersion] = useState('1.5.0');
+  // 读取本地 CHANGELOG 获取当前版本号
+  useEffect(() => {
+    fetch('/CHANGELOG.md').then(r=>r.text()).then(t=>{
+      const m = t.match(/## \[([^\]]+)\]/);
+      if (m) setAppVersion(m[1]);
+    }).catch(()=>{});
+  }, []);
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
   const setLastEvent = useWsEventStore((s) => s.setLastEvent);
 
@@ -219,7 +227,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <div className="logo-icon-wrap">
           <span aria-label="KamiSM" style={{ width: 18, height: 18, borderRadius: 4, display:'block', backgroundImage:`url(${appIcon})`, backgroundSize:'cover', backgroundPosition:'center', flexShrink:0 }} />
         </div>
-        {!showCollapsed && <><span className="logo-title">KamiSM</span><span className="logo-version">v1.5.0</span></>}
+        {!showCollapsed && <><span className="logo-title">KamiSM</span><span className="logo-version">v{appVersion}</span></>}
       </div>
     </div>
   ), []);
