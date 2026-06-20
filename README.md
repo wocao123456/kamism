@@ -306,7 +306,19 @@ git pull && docker compose up -d --build
 
 ## 对外开放 API
 
-供第三方软件集成，通过商户 `api_key` 鉴权。
+供第三方软件集成，通过商户 `api_key` 鉴权（`km_` 前缀，明文仅在生成时回显一次，数据库内以加密值 + SHA256 哈希索引存储）。所有接口均为 `POST` + `application/json`，统一前缀 `/api/v1`。
+
+> **鉴权方式**：请求体携带 `api_key`，服务端用其 SHA256 哈希匹配 `merchants.api_key_hash`，仅 `status = active` 的商户可用。
+> **风控限流**：所有接口经过 `api_rate_limit` 频率限制；`/v1/activate` 额外叠加 `activate_rate_limit`（防黄牛刷卡）。同时受 IP/设备/卡密黑名单与异常激活检测约束，命中风控会被拦截。
+
+### 接口一览
+
+| 方法 | 路径 | 说明 | 限流 |
+|---|---|---|---|
+| POST | `/api/v1/activate` | 激活卡密并绑定设备 | api + activate 双重限流 |
+| POST | `/api/v1/verify` | 验证卡密有效性与设备绑定 | api 限流 |
+| POST | `/api/v1/unbind` | 解绑指定设备 | api 限流 |
+| POST | `/api/v1/heartbeat` | 在线心跳上报，维持设备在线状态 | api 限流 |
 
 ### 激活卡密
 
@@ -323,6 +335,8 @@ Content-Type: application/json
 }
 ```
 
+> `device_id` 不能为空；`device_name` 可选。激活时会校验 API Key、应用归属与状态、黑名单与卡密频率。
+
 ### 验证卡密
 
 ```http
@@ -336,6 +350,8 @@ Content-Type: application/json
   "device_id": "设备唯一标识符"
 }
 ```
+
+> 软件每次启动调用，服务端实时校验有效期与设备绑定关系。已禁用卡密一律验证失败。
 
 ### 解绑设备
 
@@ -351,7 +367,30 @@ Content-Type: application/json
 }
 ```
 
-### 响应示例
+> 将指定 `device_id` 从卡密的已绑定设备中移除，释放一个设备名额。
+
+### 在线心跳
+
+```http
+POST https://yourdomain.com/api/v1/heartbeat
+Content-Type: application/json
+
+{
+  "api_key": "km_xxx...",
+  "device_id": "设备唯一标识符",
+  "device_name": "设备名称"
+}
+```
+
+> 客户端按周期上报心跳，用于统计与维持设备在线状态。
+
+成功响应示例：
+
+```json
+{ "success": true, "message": "心跳已记录", "status": "online" }
+```
+
+### 响应示例（激活/验证）
 
 ```json
 {
