@@ -219,8 +219,8 @@ export default function SettingsPage() {
     { key: 'basic', label: '基础设置', icon: <Upload size={15} /> },
     ...(isAdmin ? [{ key: 'admin', label: '管理员设置', icon: <SlidersHorizontal size={15} /> }] : []),
   ];
-  const rawVersion = updateInfo?.current_version || updateInfo?.current || (()=>{ try { const m = document.querySelector('meta[name=app-version]')?.getAttribute('content') || ''; return m || '1.5.1'; } catch { return '1.5.1'; } })();
-  const currentVersion = versionLabel(rawVersion).replace(/^v/i,'') || '1.5.1';
+  const rawVersion = updateInfo?.current_version || updateInfo?.current || '2.0.0';
+  const currentVersion = versionLabel(rawVersion).replace(/^v/i,'') || '2.0.0';
   const latestVersion = versionLabel(updateInfo?.latest_version || updateInfo?.latest);
   const displayHasUpdate = Boolean(updateInfo?.has_update && remoteVersionNewer(currentVersion, latestVersion));
   const nextCheck = lastCheckTime ? new Date(new Date(lastCheckTime).getTime()+86400000).toLocaleString('zh-CN') : '-';

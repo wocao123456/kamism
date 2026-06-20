@@ -245,14 +245,30 @@ async fn update_status(
     let fallback_current_hash = sh("git rev-parse --short HEAD").unwrap_or_else(|_| "unknown".into());
     let fallback_current_msg = sh("git log -1 --pretty=%s HEAD").unwrap_or_default();
     let local_current_version = first_heading(&local_changelog);
-    let fallback_current_ver = local_current_version.clone();
-
-    let (current_version, current_hash, current_msg) = clean_installed(
+    // 本地 CHANGELOG 是版本来源的真实记录，优先使用。
+    // 数据库 system_versions 可能滞后（更新完成后才写入），
+    // 所以当本地 CHANGELOG 版本 >= 数据库版本时，以 CHANGELOG 为准。
+    let (db_version, db_hash, db_msg) = clean_installed(
         installed,
-        fallback_current_ver,
-        fallback_current_hash,
-        fallback_current_msg,
+        local_current_version.clone(),
+        fallback_current_hash.clone(),
+        fallback_current_msg.clone(),
     );
+    let current_version = if remote_version_is_newer(&db_version, &local_current_version) {
+        db_version
+    } else {
+        local_current_version
+    };
+    let current_hash = if &current_version == &local_current_version {
+        fallback_current_hash
+    } else {
+        db_hash
+    };
+    let current_msg = if &current_version == &local_current_version {
+        fallback_current_msg
+    } else {
+        db_msg
+    };
 
     let latest_version = first_heading(&remote_changelog);
     // 只按版本号判断是否存在新版本，避免同版本不同 commit 误判为“发现更新”。

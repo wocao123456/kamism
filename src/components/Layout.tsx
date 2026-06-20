@@ -230,7 +230,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         {!showCollapsed && <><span className="logo-title">KamiSM</span><span className="logo-version">v{appVersion}</span></>}
       </div>
     </div>
-  ), []);
+  ), [appVersion, showCollapsed]);
 
   const sideNav = (
     <nav className="sidebar-nav">
