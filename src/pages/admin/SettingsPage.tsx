@@ -242,8 +242,8 @@ export default function SettingsPage() {
     { key: 'basic', label: '基础设置', icon: <Upload size={15} /> },
     ...(isAdmin ? [{ key: 'admin', label: '管理员设置', icon: <SlidersHorizontal size={15} /> }] : []),
   ];
-  const rawVersion = updateInfo?.current_version || updateInfo?.current || '2.0.3';
-  const currentVersion = versionLabel(rawVersion).replace(/^v/i,'') || '2.0.3';
+  const rawVersion = updateInfo?.current_version || updateInfo?.current || '未知';
+const currentVersion = versionLabel(rawVersion).replace(/^v/i,'') || '未知';
   const latestVersion = versionLabel(updateInfo?.latest_version || updateInfo?.latest);
   const displayHasUpdate = Boolean(updateInfo?.has_update && remoteVersionNewer(currentVersion, latestVersion));
   const nextCheck = lastCheckTime ? new Date(new Date(lastCheckTime).getTime()+86400000).toLocaleString('zh-CN') : '-';
@@ -275,7 +275,7 @@ export default function SettingsPage() {
             <div className="hero-ver-row" style={{display:'flex',justifyContent:'center',gap:68,marginBottom:24}}>
               <div>
                 <div style={{fontSize:13,color:'var(--t3)',marginBottom:8}}>当前版本</div>
-                <div className="hero-ver" style={{fontSize:18,fontWeight:900,color:'#3da0f5'}}>v{currentVersion}</div>
+                <div className="hero-ver" style={{fontSize:18,fontWeight:900,color:'#3da0f5'}}>{currentVersion}</div>
                 {updateInfo && <div style={{fontSize:11,color:'var(--t3)',marginTop:4}}>{updateInfo.current_message}</div>}
               </div>
               <div>
