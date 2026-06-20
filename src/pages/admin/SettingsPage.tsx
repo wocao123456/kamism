@@ -117,8 +117,7 @@ export default function SettingsPage() {
 
         if (isReallyRunning) {
           // 更新正在运行中
-          if (!applyingRef.current) { applyingRef.current = true; setApplying(true); }
-          setProgressVisible(true);
+          if (!applyingRef.current) { applyingRef.current = true; setApplying(true); setProgressVisible(true); }
           // 使用后端返回的真实阶段信息
           const phase = data.phase || 'running';
           const phaseMsg = data.phase_message || '更新中...';
@@ -295,8 +294,8 @@ export default function SettingsPage() {
             <div className="hero-actions-k" style={{display:'flex',gap:14,justifyContent:'center',flexWrap:'wrap'}}>
               <button className="pill-btn" onClick={()=>checkForUpdates()} disabled={checking} style={{background:'#3da0f5',color:'#fff',padding:'0 30px'}}><RefreshCw className={`refresh-icon ${checking?'spin':''}`} size={18}/>{checking?'检查中...':'检查更新'}</button>
               {displayHasUpdate && (
-                <button className="pill-btn" onClick={applyUpdate} disabled={applying} style={{background:applying?'#94a3b8':'#10b981',color:'#fff',padding:'0 30px'}}>
-                  {applying ? <><Loader2 className="spin" size={18}/> 更新中...</> : <><Download size={18}/> 一键更新</>}
+                <button className="pill-btn" onClick={()=>{ if(applying){ setProgressVisible(true); } else { applyUpdate(); } }} disabled={false} style={{background:applying?'#f59e0b':'#10b981',color:'#fff',padding:'0 30px',cursor:'pointer'}}>
+                  {applying ? <><Loader2 className="spin" size={18}/> 更新中，点击查看进度</> : <><Download size={18}/> 一键更新</>}
                 </button>
               )}
               <button className="pill-btn" onClick={restartPanel} style={{background:'#f2aa2c',color:'#fff',padding:'0 30px'}}><Power size={18}/>重启面板</button>
@@ -316,12 +315,12 @@ export default function SettingsPage() {
           <div className="update-foot" style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:14}}>
             {[[ '#3b82f6','最后检查时间',fmtDate(lastCheckTime) ],[ '#10b981','当前状态', applying ? (progressMessage || '更新中...') : ((checking || statusRefreshing)?'检查中...':(updateInfo ? (updateInfo.has_update?'发现新版本':'系统已是最新版本') : '未检查')) ],[ '#36cfc9','下次检查时间',nextCheck ]].map(([c,l,v])=><div key={l} style={{display:'flex',gap:9,alignItems:'flex-start'}}><span style={{width:8,height:8,borderRadius:'50%',background:l==='当前状态' && applying ? '#f59e0b' : String(c),boxShadow:`0 0 0 3px ${(l==='当前状态' && applying ? '#f59e0b' : String(c))}22`,marginTop:5}}/><div><div style={{fontSize:12,color:'var(--t3)'}}>{l}</div><div style={{fontSize:13,fontWeight:700,color:l==='当前状态'?(applying?'#f59e0b':'#10b981'):'var(--t2)'}}>{v}</div></div></div>)}
           </div>
-          {updateInfo?.log && (
-            <div style={{marginTop:16}}>
-              <button onClick={()=>setLogVisible(!logVisible)} style={{border:0,background:'transparent',color:'#3da0f5',cursor:'pointer',fontSize:13,fontWeight:700}}>{logVisible?'收起日志':'查看更新日志'}</button>
-              {logVisible && <pre style={{marginTop:8,maxHeight:300,overflow:'auto',background:'var(--fc,#f8fafc)',border:'1px solid var(--bd,#edf0f5)',borderRadius:12,padding:'12px 14px',fontSize:12,lineHeight:1.6,color:'var(--t2)',whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{updateInfo.log}</pre>}
-            </div>
-          )}
+           {updateInfo?.log && (
+             <div style={{marginTop:16}}>
+               <button onClick={()=>setLogVisible(!logVisible)} style={{border:0,background:'transparent',color:'#3da0f5',cursor:'pointer',fontSize:13,fontWeight:700}}>{logVisible?'收起日志':'查看完整实时构建日志'}</button>
+               {logVisible && <pre style={{marginTop:8,maxHeight:300,overflow:'auto',background:'var(--fc,#f8fafc)',border:'1px solid var(--bd,#edf0f5)',borderRadius:12,padding:'12px 14px',fontSize:12,lineHeight:1.6,color:'var(--t2)',whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{updateInfo.log}</pre>}
+             </div>
+           )}
         </SettingsCard>
 
         {/* 更新进度弹窗 */}
@@ -340,14 +339,21 @@ export default function SettingsPage() {
               {progressPhase !== 'done' && progressPhase !== 'error' && (
                 <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:8,marginBottom:16}}>
                   <div style={{width:200,height:6,borderRadius:3,background:'#e5e7eb',overflow:'hidden'}}>
-                    <div style={{height:'100%',borderRadius:3,background:'linear-gradient(90deg,#3b82f6,#06b6d4)',transition:'width .5s',width: progressPhase==='preparing'?'15%':progressPhase==='fetching'?'30%':progressPhase==='building'?'55%':progressPhase==='restarting'?'80%':progressPhase==='finalizing'?'95%':'100%'}}/>
+                    <div style={{height:'100%',borderRadius:3,background:'linear-gradient(90deg,#3b82f6,#06b6d4)',transition:'width .5s',width: `${updateInfo?.progress_pct ?? 0}%`}}/>
                   </div>
+                  <span style={{fontSize:11,color:'var(--t3)',fontWeight:700,minWidth:32}}>{updateInfo?.progress_pct ?? 0}%</span>
                 </div>
               )}
               {/* 更新中实时显示日志 */}
-              {progressPhase !== 'done' && progressPhase !== 'error' && updateInfo?.log && (
-                <div style={{marginTop:12,maxHeight:160,overflow:'auto',background:'var(--fc,#f8fafc)',border:'1px solid var(--bd,#edf0f5)',borderRadius:12,padding:'10px 14px',fontSize:11,lineHeight:1.5,color:'var(--t2)',whiteSpace:'pre-wrap',wordBreak:'break-word',textAlign:'left'}}>{updateInfo.log}</div>
-              )}
+              {progressPhase !== 'done' && progressPhase !== 'error' && updateInfo?.log && (() => {
+                const lines = updateInfo.log.split('\n').filter((l: string) => l.trim());
+                const lastLine = lines.length > 0 ? lines[lines.length - 1] : '';
+                return (
+                  <div style={{marginTop:12,padding:'10px 14px',background:'var(--fc,#f8fafc)',border:'1px solid var(--bd,#edf0f5)',borderRadius:10,fontSize:12,lineHeight:1.5,color:'var(--t2)',whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis',textAlign:'left'}}>
+                    {lastLine || '等待构建日志...'}
+                  </div>
+                );
+              })()}
               {/* 更新失败时也显示日志 */}
               {progressPhase === 'error' && updateInfo?.log && (
                 <div style={{marginTop:12,maxHeight:160,overflow:'auto',background:'var(--fc,#f8fafc)',border:'1px solid var(--bd,#edf0f5)',borderRadius:12,padding:'10px 14px',fontSize:11,lineHeight:1.5,color:'var(--t2)',whiteSpace:'pre-wrap',wordBreak:'break-word',textAlign:'left'}}>{updateInfo.log}</div>

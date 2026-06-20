@@ -191,29 +191,35 @@ fn admin_only(claims: &Claims) -> Option<Response> {
     }
 }
 
-/// 从日志中解析当前更新阶段
-fn parse_phase(log: &str) -> (String, String) {
+/// 从日志中解析当前更新阶段，返回 (phase, phase_message, progress_pct)
+fn parse_phase(log: &str) -> (String, String, u32) {
     let last_progress = log
         .lines()
         .rev()
         .find(|l| l.contains("[") && l.contains("]") && l.contains("/6"))
         .unwrap_or("");
     if last_progress.contains("[1/6]") {
-        ("fetching".into(), "正在拉取最新代码...".into())
+        ("fetching".into(), "正在拉取最新代码...".into(), 15)
     } else if last_progress.contains("[2/6]") {
-        ("building".into(), "正在准备环境...".into())
+        ("building".into(), "正在准备环境...".into(), 20)
     } else if last_progress.contains("[3/6]") {
-        ("building".into(), "正在重新构建镜像...".into())
+        // 从日志中检查 docker build 进度，按行数估算
+        let build_lines = log.lines().filter(|l| {
+            l.contains("COPY") || l.contains("RUN") || l.contains("CACHED")
+                || l.contains("DONE") || l.contains("Step") || l.contains("=>") || l.contains("Building")
+        }).count();
+        let pct = 30u32.saturating_add(build_lines as u32).min(85);
+        ("building".into(), "正在重新构建镜像...".into(), pct)
     } else if last_progress.contains("[4/6]") {
-        ("restarting".into(), "正在重启容器...".into())
+        ("restarting".into(), "正在重启容器...".into(), 86)
     } else if last_progress.contains("[5/6]") {
-        ("finalizing".into(), "正在写入版本信息...".into())
+        ("finalizing".into(), "正在写入版本信息...".into(), 93)
     } else if last_progress.contains("[6/6]") || last_progress.contains("update end") {
-        ("done".into(), "更新完成".into())
+        ("done".into(), "更新完成".into(), 100)
     } else if last_progress.contains("update start") {
-        ("preparing".into(), "正在准备更新...".into())
+        ("preparing".into(), "正在准备更新...".into(), 5)
     } else {
-        ("idle".into(), String::new())
+        ("idle".into(), String::new(), 0)
     }
 }
 
@@ -301,10 +307,10 @@ async fn update_status(
         false
     };
 
-    let (phase, phase_message) = if pid_alive || running {
+    let (phase, phase_message, progress_pct) = if pid_alive || running {
         parse_phase(&log_content)
     } else {
-        ("idle".into(), String::new())
+        ("idle".into(), String::new(), 0)
     };
 
     // 清理残留的 running 标记
@@ -329,6 +335,7 @@ async fn update_status(
         "running": running && pid_alive,
         "phase": phase,
         "phase_message": phase_message,
+        "progress_pct": progress_pct,
         "changelog": display_changelog,
         "log": log_content
     }})).into_response()
