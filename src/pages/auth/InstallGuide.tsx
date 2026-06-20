@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
-import { Shield, User, Settings, ChevronDown } from 'lucide-react';
+import { Shield, User, Settings, ChevronDown, KeyRound, Database, Mail, Lock, RefreshCw, Loader2, Rocket } from 'lucide-react';
+import appIcon from '../../assets/app-icon.png';
 
 const randomString = (len: number) => Array.from(crypto.getRandomValues(new Uint8Array(len))).map(b => b.toString(36).padStart(2, '0')).join('').substring(0, len);
 const randomHex = () => Array.from(crypto.getRandomValues(new Uint8Array(32))).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -21,6 +22,8 @@ export default function InstallGuide() {
   const [loading, setLoading] = useState(false);
   const [logOpen, setLogOpen] = useState(false);
   const [genConfirm, setGenConfirm] = useState<{ field: string; generator: () => string } | null>(null);
+
+  useEffect(() => { document.title = '首次安装引导 - KamiSM'; }, []);
 
   const set = (k: string, v: string) => setF(p => ({ ...p, [k]: v }));
 
@@ -61,181 +64,116 @@ export default function InstallGuide() {
   const logLevels = ['error', 'warn', 'info', 'debug', 'trace'];
 
   return (
-    <div style={{ minHeight: '100vh', background: 'var(--bg)', padding: '24px 16px 100px', position: 'relative' }}>
-      <div style={{ maxWidth: 640, margin: '0 auto' }}>
-        <div style={{ textAlign: 'center', marginBottom: 32 }}>
-          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
-            <div style={{ width: 48, height: 48, borderRadius: 14, background: 'linear-gradient(135deg, var(--accent), #6d28d9)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 4px 14px rgba(124,106,247,0.3)' }}>
-              <Settings size={24} color="#fff" />
-            </div>
+    <div className="auth-page install-page">
+      <main className="auth-wrap install-wrap">
+        <section className="auth-brand">
+          <img src={appIcon} alt="KamiSM" />
+          <h1>KamiSM</h1>
+          <p></p>
+        </section>
+
+        <section className="auth-card install-card">
+          <div className="auth-title">
+            <h2>首次安装引导</h2>
+            <p>请仅在初次部署时填写，配置保存后将自动锁定，避免重复操作带来安全隐患。</p>
           </div>
-          <h1 style={{ fontSize: 26, fontWeight: 900, margin: '0 0 8px', letterSpacing: '-0.5px' }}>首次安装引导</h1>
-          <p style={{ color: 'var(--text-muted)', fontSize: 14, margin: 0, lineHeight: 1.6 }}>
-            请仅在初次部署时填写。配置保存后将自动锁定，避免重复操作带来安全隐患。
-          </p>
-        </div>
 
-        <div className="card" style={{ padding: '24px 20px', borderRadius: 16, boxShadow: '0 2px 12px rgba(0,0,0,0.04)', border: '1px solid var(--border)' }}>
-          <div style={{ display: 'grid', gap: 22 }}>
-            
-            {/* PostgreSQL Password */}
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <Shield size={14} style={{ color: 'var(--accent)' }} />
-                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>数据库密码</span>
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>PostgreSQL (至少 5 位)</div>
-              <input className="input" type="text" value={f.postgres_password} onChange={e => set('postgres_password', e.target.value)} placeholder="kamism" style={{ height: 44, fontSize: 14 }} />
-            </div>
+          {/* 安全密钥 */}
+          <div className="install-group">
+            <div className="install-group-title"><Shield size={14} /> 安全与凭据</div>
 
-            {/* RabbitMQ Password */}
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <Shield size={14} style={{ color: 'var(--accent)' }} />
-                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>消息队列密码</span>
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>RabbitMQ (至少 5 位)</div>
-              <input className="input" type="text" value={f.rabbitmq_password} onChange={e => set('rabbitmq_password', e.target.value)} placeholder="kamism" style={{ height: 44, fontSize: 14 }} />
-            </div>
+            <label className="install-field">
+              <span className="install-label"><Database size={13} /> 数据库密码 <em>PostgreSQL · 至少 5 位</em></span>
+              <div className="auth-input"><input type="text" value={f.postgres_password} onChange={e => set('postgres_password', e.target.value)} placeholder="kamism" /></div>
+            </label>
 
-            {/* JWT Secret */}
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <Shield size={14} style={{ color: 'var(--accent)' }} />
-                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>JWT 签名密钥</span>
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>建议 32 位以上随机字符串</div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input className="input" type="text" value={f.jwt_secret} onChange={e => set('jwt_secret', e.target.value)} placeholder="点击生成" style={{ height: 44, fontSize: 14, flex: 1 }} />
-                <button className="btn btn-ghost" onClick={() => handleGenRequest('jwt_secret', () => randomString(48))} style={{ height: 44, padding: '0 16px', fontSize: 13, whiteSpace: 'nowrap' }}>生成</button>
-              </div>
-            </div>
+            <label className="install-field">
+              <span className="install-label"><Database size={13} /> 消息队列密码 <em>RabbitMQ · 至少 5 位</em></span>
+              <div className="auth-input"><input type="text" value={f.rabbitmq_password} onChange={e => set('rabbitmq_password', e.target.value)} placeholder="kamism" /></div>
+            </label>
 
-            {/* Master Key */}
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <Shield size={14} style={{ color: 'var(--accent)' }} />
-                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>主加密密钥</span>
+            <label className="install-field">
+              <span className="install-label"><KeyRound size={13} /> JWT 签名密钥 <em>建议 32 位以上随机字符串</em></span>
+              <div className="install-with-btn">
+                <div className="auth-input"><input type="text" value={f.jwt_secret} onChange={e => set('jwt_secret', e.target.value)} placeholder="点击右侧生成" /></div>
+                <button type="button" className="install-gen" onClick={() => handleGenRequest('jwt_secret', () => randomString(48))}><RefreshCw size={14} /> 生成</button>
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>十六进制字符串（64 个字符）</div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <input className="input" type="text" value={f.master_key} onChange={e => set('master_key', e.target.value)} placeholder="点击生成" style={{ height: 44, fontSize: 14, flex: 1 }} />
-                <button className="btn btn-ghost" onClick={() => handleGenRequest('master_key', randomHex)} style={{ height: 44, padding: '0 16px', fontSize: 13, whiteSpace: 'nowrap' }}>生成</button>
-              </div>
-            </div>
+            </label>
 
-            {/* Admin Email */}
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <User size={14} style={{ color: 'var(--accent)' }} />
-                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>管理员账号</span>
+            <label className="install-field">
+              <span className="install-label"><Lock size={13} /> 主加密密钥 <em>十六进制字符串 · 64 个字符</em></span>
+              <div className="install-with-btn">
+                <div className="auth-input"><input type="text" value={f.master_key} onChange={e => set('master_key', e.target.value)} placeholder="点击右侧生成" /></div>
+                <button type="button" className="install-gen" onClick={() => handleGenRequest('master_key', randomHex)}><RefreshCw size={14} /> 生成</button>
               </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>用于登录后台 (必须为邮箱)</div>
-              <input className="input" type="email" value={f.admin_email} onChange={e => set('admin_email', e.target.value)} placeholder="admin@example.com" style={{ height: 44, fontSize: 14 }} />
-            </div>
+            </label>
+          </div>
 
-            {/* Admin Password */}
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <User size={14} style={{ color: 'var(--accent)' }} />
-                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>管理员密码</span>
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>首次登录密码</div>
-              <input className="input" type="text" value={f.admin_password} onChange={e => set('admin_password', e.target.value)} placeholder="Admin@123456" style={{ height: 44, fontSize: 14 }} />
-            </div>
+          {/* 管理员账号 */}
+          <div className="install-group">
+            <div className="install-group-title"><User size={14} /> 管理员账号</div>
 
-            {/* Frontend Port */}
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <Settings size={14} style={{ color: 'var(--text-muted)' }} />
-                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>前端访问端口</span>
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>默认 1420</div>
-              <input className="input" type="number" value={f.frontend_port} onChange={e => set('frontend_port', e.target.value)} placeholder="1420" style={{ height: 44, fontSize: 14 }} />
-            </div>
+            <label className="install-field">
+              <span className="install-label"><Mail size={13} /> 管理员账号 <em>用于登录后台 · 必须为邮箱</em></span>
+              <div className="auth-input"><input type="email" value={f.admin_email} onChange={e => set('admin_email', e.target.value)} placeholder="admin@example.com" /></div>
+            </label>
 
-            {/* Log Level - Expandable */}
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                <Settings size={14} style={{ color: 'var(--text-muted)' }} />
-                <span style={{ fontSize: 14, fontWeight: 600, color: 'var(--text)' }}>日志级别</span>
-              </div>
-              <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>错误排查用</div>
-              <div 
-                className="input" 
-                onClick={() => setLogOpen(!logOpen)}
-                style={{ height: 44, fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}
-              >
+            <label className="install-field">
+              <span className="install-label"><Lock size={13} /> 管理员密码 <em>首次登录密码</em></span>
+              <div className="auth-input"><input type="text" value={f.admin_password} onChange={e => set('admin_password', e.target.value)} placeholder="Admin@123456" /></div>
+            </label>
+          </div>
+
+          {/* 高级 */}
+          <div className="install-group">
+            <div className="install-group-title"><Settings size={14} /> 运行参数</div>
+
+            <label className="install-field">
+              <span className="install-label"><Settings size={13} /> 前端访问端口 <em>默认 1420</em></span>
+              <div className="auth-input"><input type="number" value={f.frontend_port} onChange={e => set('frontend_port', e.target.value)} placeholder="1420" /></div>
+            </label>
+
+            <div className="install-field">
+              <span className="install-label"><Settings size={13} /> 日志级别 <em>错误排查用</em></span>
+              <div className="install-select" onClick={() => setLogOpen(!logOpen)}>
                 <span>{f.rust_log}</span>
                 <ChevronDown size={18} style={{ transform: logOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: '0.2s' }} />
               </div>
-              
               {logOpen && (
-                <div style={{ marginTop: 4, background: 'var(--bg-hover)', borderRadius: 8, overflow: 'hidden', border: '1px solid var(--border)' }}>
+                <div className="install-select-menu">
                   {logLevels.map(level => (
-                    <div 
-                      key={level} 
-                      onClick={() => { set('rust_log', level); setLogOpen(false); }}
-                      style={{ 
-                        padding: '10px 16px', display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                        cursor: 'pointer', fontSize: 14, fontWeight: 500,
-                        background: f.rust_log === level ? 'var(--accent-glow)' : 'transparent',
-                        color: f.rust_log === level ? 'var(--accent)' : 'var(--text)'
-                      }}
-                    >
+                    <div key={level} className={'install-select-item' + (f.rust_log === level ? ' active' : '')} onClick={() => { set('rust_log', level); setLogOpen(false); }}>
                       <span>{level}</span>
-                      {f.rust_log === level && <div style={{ width: 6, height: 6, borderRadius: 3, background: 'var(--accent)' }} />}
+                      {f.rust_log === level && <i />}
                     </div>
                   ))}
                 </div>
               )}
             </div>
-
           </div>
 
-          <button
-            className="btn btn-primary"
-            onClick={submit}
-            disabled={loading}
-            style={{
-              marginTop: 28, height: 48, fontSize: 15, fontWeight: 700, borderRadius: 12,
-              background: 'linear-gradient(135deg, var(--accent), #6d28d9)', border: 'none',
-              boxShadow: '0 4px 12px rgba(124,106,247,0.25)', width: '100%'
-            }}
-          >
-            {loading ? '正在保存...' : '确认保存并进入系统'}
+          <button className="auth-primary" onClick={submit} disabled={loading}>
+            {loading ? <Loader2 className="spin" /> : <Rocket size={18} />} {loading ? '正在保存...' : '确认保存并进入系统'}
           </button>
-        </div>
 
-        <div style={{ textAlign: 'center', marginTop: 20, fontSize: 12, color: 'var(--text-muted)' }}>
-          配置保存后将立即生效，无需重启。已保存到系统表。
-        </div>
+          <p className="install-tip">配置保存后将立即生效，无需重启，已写入系统配置表。</p>
+        </section>
 
-        {/* Custom Confirmation Modal */}
-        {genConfirm && (
-          <>
-            <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000 }} onClick={() => setGenConfirm(null)} />
-            <div style={{ position: 'fixed', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', zIndex: 1001, background: 'var(--bg-card)', padding: 24, borderRadius: 16, width: 'min(320px, 90vw)', border: '1px solid var(--border)', boxShadow: '0 8px 30px rgba(0,0,0,0.15)' }}>
-              <h3 style={{ margin: '0 0 12px', fontSize: 16, fontWeight: 700 }}>安全提示</h3>
-              <p style={{ margin: '0 0 24px', fontSize: 14, color: 'var(--text-muted)', lineHeight: 1.5 }}>
-                警告：不建议使用一键随机生成，请妥善保管生成的密钥！
-              </p>
-              <div style={{ display: 'flex', gap: 12, justifyContent: 'flex-end' }}>
-                <button className="btn btn-ghost" onClick={() => setGenConfirm(null)}>取消</button>
-                <button 
-                  className="btn btn-primary" 
-                  onClick={() => { 
-                    set(genConfirm.field, genConfirm.generator()); 
-                    setGenConfirm(null); 
-                  }}
-                >
-                  确定
-                </button>
-              </div>
+        <footer className="auth-footer">KamiSM · 卡密授权管理系统</footer>
+      </main>
+
+      {genConfirm && (
+        <div className="install-modal-mask" onClick={() => setGenConfirm(null)}>
+          <div className="install-modal" onClick={e => e.stopPropagation()}>
+            <h3><Shield size={16} /> 安全提示</h3>
+            <p>不建议使用一键随机生成后置之不理，请务必妥善保管生成的密钥，遗失将无法解密历史数据。</p>
+            <div className="install-modal-actions">
+              <button className="install-btn-ghost" onClick={() => setGenConfirm(null)}>取消</button>
+              <button className="install-btn-primary" onClick={() => { set(genConfirm.field, genConfirm.generator()); setGenConfirm(null); }}>确定生成</button>
             </div>
-          </>
-        )}
-      </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

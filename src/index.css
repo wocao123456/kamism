@@ -1536,3 +1536,48 @@ html:has(.auth-page),body:has(.auth-page),#root:has(.auth-page){height:100%!impo
 .profile-hero.profile-hero-pink{background:linear-gradient(120deg,#ffffff 0%,#ffe4ec 25%,#ffc1d6 50%,#ffe4ec 75%,#ffffff 100%)!important;background-size:300% 300%!important;animation:pinkHeroFlow 9s ease-in-out infinite!important;border:1px solid #fbcfe8!important;box-shadow:0 8px 24px rgba(244,114,182,.12)!important;}
 [data-theme="dark"] .profile-hero.profile-hero-pink{background:linear-gradient(120deg,#1a0f15 0%,#3a1a26 25%,#5b2233 50%,#3a1a26 75%,#1a0f15 100%)!important;background-size:300% 300%!important;animation:pinkHeroFlow 9s ease-in-out infinite!important;border-color:#5b2233!important;box-shadow:0 8px 24px rgba(244,114,182,.18)!important;}
 @media (prefers-reduced-motion: reduce){.profile-hero.profile-hero-pink{animation:none!important;background:linear-gradient(120deg,#ffffff,#ffd8e4,#ffffff)!important;background-size:100% 100%!important}}
+
+/* === 20260620 install guide redesign === */
+.install-page{align-items:flex-start!important;overflow-y:auto!important;padding:clamp(24px,4vh,48px) 16px!important}
+.install-wrap{max-width:560px!important;width:min(100%,560px)!important;min-height:0!important;justify-content:flex-start!important}
+.install-card{padding:30px 28px!important;text-align:left!important}
+.install-card .auth-title{text-align:center!important}
+.install-card .auth-title p{max-width:380px;margin:8px auto 0;line-height:1.6}
+.install-group{margin-top:22px;padding-top:18px;border-top:1px dashed var(--bdl)}
+.install-group:first-of-type{margin-top:18px}
+.install-group-title{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:800;letter-spacing:.3px;color:var(--accent,#7c6af7);text-transform:uppercase;margin-bottom:16px}
+.install-group-title svg{color:var(--accent,#7c6af7)}
+.install-field{display:block;margin-bottom:16px}
+.install-field:last-child{margin-bottom:0}
+.install-label{display:flex;align-items:center;gap:6px;font-size:13.5px;font-weight:700;color:var(--t1,#1d2129);margin-bottom:8px}
+.install-label svg{color:var(--t3,#86909c)}
+.install-label em{font-style:normal;font-weight:500;font-size:11.5px;color:var(--t3,#86909c);margin-left:2px}
+.install-with-btn{display:flex;gap:10px;align-items:stretch}
+.install-with-btn .auth-input{flex:1}
+.install-gen{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;padding:0 16px;border-radius:12px;border:1px solid var(--bd,#dcdfe6);background:var(--bgp,#f8fafc);color:var(--t1,#1d2129);font-size:13px;font-weight:700;cursor:pointer;transition:.18s}
+.install-gen:hover{border-color:var(--accent,#7c6af7);color:var(--accent,#7c6af7);background:rgba(124,106,247,.08)}
+.install-gen svg{transition:transform .4s}
+.install-gen:hover svg{transform:rotate(180deg)}
+.install-select{display:flex;align-items:center;justify-content:space-between;height:48px;padding:0 14px;border-radius:14px;border:1px solid var(--bd,#dcdfe6);background:var(--card,#fff);color:var(--t1,#1d2129);font-size:14px;cursor:pointer;transition:.18s}
+.install-select:hover{border-color:var(--accent,#7c6af7)}
+.install-select-menu{margin-top:6px;border:1px solid var(--bdl,#e4e7ed);border-radius:12px;overflow:hidden;background:var(--card,#fff);box-shadow:0 8px 24px rgba(0,0,0,.08)}
+.install-select-item{display:flex;align-items:center;justify-content:space-between;padding:11px 14px;font-size:14px;font-weight:600;cursor:pointer;transition:.12s;color:var(--t1,#1d2129)}
+.install-select-item:hover{background:var(--fcl,#f5f7fa)}
+.install-select-item.active{background:rgba(124,106,247,.1);color:var(--accent,#7c6af7)}
+.install-select-item i{width:7px;height:7px;border-radius:50%;background:var(--accent,#7c6af7)}
+.install-card .auth-primary{margin-top:26px}
+.install-tip{margin:14px 0 0;text-align:center;font-size:12px;color:var(--t3,#86909c)}
+.install-modal-mask{position:fixed;inset:0;z-index:1000;background:rgba(15,23,42,.55);backdrop-filter:blur(3px);display:flex;align-items:center;justify-content:center;padding:20px;animation:installFade .2s ease}
+@keyframes installFade{from{opacity:0}to{opacity:1}}
+.install-modal{width:min(360px,92vw);background:var(--card,#fff);border:1px solid var(--bdl,#e4e7ed);border-radius:18px;padding:24px;box-shadow:0 20px 50px rgba(0,0,0,.25);animation:installPop .22s cubic-bezier(.16,1,.3,1)}
+@keyframes installPop{from{opacity:0;transform:scale(.94) translateY(8px)}to{opacity:1;transform:scale(1) translateY(0)}}
+.install-modal h3{display:flex;align-items:center;gap:8px;margin:0 0 12px;font-size:16px;font-weight:800;color:var(--t1,#1d2129)}
+.install-modal h3 svg{color:#f59e0b}
+.install-modal p{margin:0 0 22px;font-size:13.5px;line-height:1.6;color:var(--t2,#4e5969)}
+.install-modal-actions{display:flex;gap:10px;justify-content:flex-end}
+.install-btn-ghost,.install-btn-primary{padding:9px 18px;border-radius:10px;font-size:13.5px;font-weight:700;cursor:pointer;transition:.18s;border:1px solid transparent}
+.install-btn-ghost{background:var(--fcl,#f5f7fa);color:var(--t2,#4e5969);border-color:var(--bdl,#e4e7ed)}
+.install-btn-ghost:hover{background:var(--fc,#f0f2f5)}
+.install-btn-primary{background:linear-gradient(135deg,var(--accent,#7c6af7),#6d28d9);color:#fff;box-shadow:0 4px 12px rgba(124,106,247,.3)}
+.install-btn-primary:hover{filter:brightness(1.05)}
+@media(max-width:520px){.install-card{padding:24px 18px!important}.install-with-btn{flex-direction:column}.install-gen{height:42px;justify-content:center}}
