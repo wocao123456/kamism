@@ -33,18 +33,14 @@ echo "[$(date)] [1/6] fetch latest code..." >> "$LOG"
 git fetch origin main >> "$LOG" 2>&1
 git reset --hard origin/main >> "$LOG" 2>&1
 
-echo "[$(date)] [2/6] ensure .evn..." >> "$LOG"
-./ensure_evn.sh >> "$LOG" 2>&1 || true
+echo "[$(date)] [2/6] ensure .env..." >> "$LOG"
+bash ./ensure_evn.sh >> "$LOG" 2>&1 || true
 
-echo "[$(date)] [3/6] rebuild app/web (timeout: 1h)..." >> "$LOG"
-if command -v timeout >/dev/null 2>&1; then
-  timeout 3600 run_compose build app web >> "$LOG" 2>&1 || {
-    echo "[$(date)] [3/6] build timed out after 1 hour, aborting update" >> "$LOG"
-    exit 1
-  }
-else
-  run_compose build app web >> "$LOG" 2>&1
-fi
+echo "[$(date)] [3/6] rebuild app/web..." >> "$LOG"
+run_compose build app web >> "$LOG" 2>&1 || {
+  echo "[$(date)] [3/6] build failed, aborting update" >> "$LOG"
+  exit 1
+}
 
 echo "[$(date)] [4/6] restart app/web..." >> "$LOG"
 run_compose up -d app web >> "$LOG" 2>&1
