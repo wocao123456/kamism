@@ -83,6 +83,28 @@ pub async fn auth_middleware(
                     }
                 }
             }
+            if claims.role == "merchant" {
+                let merchant_status: Option<(String,)> = sqlx::query_as("SELECT status FROM merchants WHERE id::text = $1")
+                    .bind(&claims.sub)
+                    .fetch_optional(&state.pool)
+                    .await
+                    .unwrap_or(None);
+                match merchant_status.as_ref().map(|(status,)| status.as_str()) {
+                    Some("active") => {}
+                    Some(_) => {
+                        return (
+                            StatusCode::FORBIDDEN,
+                            Json(json!({"success": false, "message": "账户已被禁用，请联系管理员"})),
+                        ).into_response();
+                    }
+                    None => {
+                        return (
+                            StatusCode::UNAUTHORIZED,
+                            Json(json!({"success": false, "message": "账户不存在或已失效"})),
+                        ).into_response();
+                    }
+                }
+            }
             req.extensions_mut().insert(claims);
             next.run(req).await
         }

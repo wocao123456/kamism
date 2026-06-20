@@ -1,231 +1,333 @@
-import { useEffect, useState, useRef } from 'react';
-import { merchantMessagesApi } from '../../lib/api';
-import { useWsEventStore } from '../../stores/wsEvent';
-import { Bell, Pin, RefreshCw } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Bell, FileText, Pin, RefreshCw, Check, Mail, MailOpen, Eye } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { merchantMessagesApi } from '../../lib/api';
+import AnimatedNumber from '../../components/AnimatedNumber';
 
-interface MsgItem {
+interface Message {
   id: string;
   msg_type: string;
   title: string;
   content: string;
-  target_type: string;
   pinned: boolean;
-  is_read: boolean;
+  read: boolean;
+  read_at?: string;
+  reward_amount?: number | null;
+  reward_claimed?: boolean;
   created_at: string;
 }
 
-type Tab = 'messages' | 'notices';
-
 export default function MerchantMessages() {
-  const [tab, setTab] = useState<Tab>('messages');
-  const [items, setItems] = useState<MsgItem[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<MsgItem | null>(null);
+  const [filter, setFilter] = useState('');
+  const [unreadCount, setUnreadCount] = useState(0);
   const PAGE_SIZE = 15;
 
-  const prevTabRef = useRef(tab);
-
-  const load = (p: number, t: Tab) => {
+  const load = (p = page) => {
     setLoading(true);
-    setItems([]);
-    const req = t === 'messages'
-      ? merchantMessagesApi.listMessages({ page: p, page_size: PAGE_SIZE })
-      : merchantMessagesApi.listNotices({ page: p, page_size: PAGE_SIZE });
-    req
-      .then((res) => {
-        if (res.data.success) {
-          setItems(res.data.data);
-          setTotal(res.data.total);
-        }
+    setMessages([]);
+    Promise.all([
+      merchantMessagesApi.listNotices({ page: p, page_size: PAGE_SIZE }),
+      filter !== 'unread' ? merchantMessagesApi.listMessages({ page: p, page_size: PAGE_SIZE }) : Promise.resolve({ data: { success: true, data: [], total: 0 } }),
+    ])
+      .then(([noticeRes, msgRes]) => {
+        const all: Message[] = [];
+        if (noticeRes.data.success) all.push(...(noticeRes.data.data || []).map((m: any) => ({ ...m, read: m.is_read })));
+        if (msgRes.data.success) all.push(...(msgRes.data.data || []).map((m: any) => ({ ...m, read: m.is_read, msg_type: 'message' })));
+        all.sort((a, b) => Number(b.pinned) - Number(a.pinned) || new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+        setMessages(all);
+        const totalNotices = noticeRes.data.total || 0;
+        const totalMsgs = msgRes.data.total || 0;
+        setTotal(totalNotices + totalMsgs);
       })
+      .catch(() => {})
       .finally(() => setLoading(false));
   };
 
-  // tab 变化时重置 page=1，page/tab 统一驱动加载，避免双重触发
-  useEffect(() => {
-    const isTabChange = prevTabRef.current !== tab;
-    prevTabRef.current = tab;
-    const p = isTabChange ? 1 : page;
-    if (isTabChange) setPage(1);
-    load(p, tab);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, tab]);
-
-  // 订阅事件总线：收到新消息时刷新列表（WS 连接由 Layout 统一维护）
-  const lastEvent = useWsEventStore((s) => s.lastEvent);
-  useEffect(() => {
-    if (lastEvent?.event === 'new_message') {
-      toast(<span>📬 新消息：<b>{String(lastEvent.data?.title ?? '')}</b></span>, { duration: 5000 });
-      // 直接调用 load 避免 page=1 时 setPage(1) 不触发 useEffect
-      setPage(1);
-      load(1, tab);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [lastEvent]);
-
-  const handleOpen = async (msg: MsgItem) => {
-    setSelected(msg);
-    if (tab === 'messages' && !msg.is_read) {
-      try {
-        await merchantMessagesApi.markRead(msg.id);
-        setItems((prev) =>
-          prev.map((m) => (m.id === msg.id ? { ...m, is_read: true } : m))
-        );
-      } catch { /* 已读失败静默 */ }
-    }
+  const fetchUnreadCount = () => {
+    merchantMessagesApi.unreadCount().then((res) => {
+      if (res.data.success) {
+        setUnreadCount(res.data.data.unread || 0);
+      }
+    }).catch(() => {});
   };
 
+  useEffect(() => { load(); }, [page, filter]);
+  useEffect(() => { fetchUnreadCount(); }, []);
+
+  const claimReward = async (msg: any) => {
+    try {
+      const res = await merchantMessagesApi.claimReward(msg.id);
+      if (res.data.success) {
+        toast.success(res.data.message || '领取成功');
+        setMessages(ms => ms.map(m => m.id === msg.id ? { ...(m as any), read: true, reward_claimed: true } as any : m));
+        fetchUnreadCount();
+        window.dispatchEvent(new CustomEvent('merchant-sync'));
+        window.dispatchEvent(new CustomEvent('unread-sync'));
+      } else {
+        toast.error(res.data.message || '领取失败');
+      }
+    } catch {
+      toast.error('领取失败');
+    }
+  };
+  const markRead = (id: string) => {
+    merchantMessagesApi.markRead(id)
+      .then((res) => {
+        const d = res.data;
+        if (d && (d.success === true || d.code === 0)) {
+          setMessages(ms => ms.map(m => m.id === id ? { ...m, read: true, read_at: new Date().toISOString() } : m));
+          fetchUnreadCount();
+          window.dispatchEvent(new CustomEvent('unread-sync'));
+          toast.success('已标记为已读');
+        } else {
+          setMessages(ms => ms.map(m => m.id === id ? { ...m, read: true, read_at: new Date().toISOString() } : m));
+          fetchUnreadCount();
+          window.dispatchEvent(new CustomEvent('unread-sync'));
+        }
+      })
+      .catch(() => {
+        setMessages(ms => ms.map(m => m.id === id ? { ...m, read: true, read_at: new Date().toISOString() } : m));
+        fetchUnreadCount();
+        window.dispatchEvent(new CustomEvent('unread-sync'));
+        toast.success('已标记为已读');
+      });
+  };
+
+  const filtered = messages.filter(m => {
+    if (filter === 'unread') return !m.read;
+    if (filter === 'notice') return m.msg_type === 'notice';
+    return true;
+  });
+
   const totalPages = Math.ceil(total / PAGE_SIZE);
+  const noticeCount = messages.filter(m => m.msg_type === 'notice').length;
+  const readCount = messages.filter(m => m.read).length;
 
   return (
-    <div className="fade-in">
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">消息中心</h1>
-          <p className="page-subtitle">
-            {loading ? <span className="skeleton" style={{ display: 'inline-block', width: 60, height: 13, borderRadius: 4, verticalAlign: 'middle' }} /> : `共 ${total} 条`}
-          </p>
+    <div className="dpage messages-page">
+      {/* 统计卡片 */}
+      <div className="stat-grid" style={{ gap: 8 }}>
+        <div className="stat-card-v2">
+          <div className="stat-card-v2__info">
+            <div className="stat-card-v2__label">总消息</div>
+            <div className="stat-card-v2__value" style={{ color: '#1890ff' }}>{<AnimatedNumber value={total} />}</div>
+            <div className="stat-card-v2__desc">所有消息</div>
+          </div>
+          <div className="stat-card-v2__icon" style={{ background: '#e6f4ff', color: '#1890ff' }}>
+            <Bell size={20} />
+          </div>
         </div>
-        <div className="page-header-actions">
-          <button className="btn btn-ghost" onClick={() => load(page, tab)}><RefreshCw size={14} /> 刷新</button>
+        <div className="stat-card-v2">
+          <div className="stat-card-v2__info">
+            <div className="stat-card-v2__label">未读</div>
+            <div className="stat-card-v2__value" style={{ color: '#ff4d4f' }}>{<AnimatedNumber value={unreadCount} />}</div>
+            <div className="stat-card-v2__desc">待查看</div>
+          </div>
+          <div className="stat-card-v2__icon" style={{ background: '#fff1f0', color: '#ff4d4f' }}>
+            <Mail size={20} />
+          </div>
+        </div>
+        <div className="stat-card-v2">
+          <div className="stat-card-v2__info">
+            <div className="stat-card-v2__label">公告</div>
+            <div className="stat-card-v2__value" style={{ color: '#52c41a' }}>{<AnimatedNumber value={noticeCount} />}</div>
+            <div className="stat-card-v2__desc">系统公告</div>
+          </div>
+          <div className="stat-card-v2__icon" style={{ background: '#f6ffed', color: '#52c41a' }}>
+            <FileText size={20} />
+          </div>
+        </div>
+        <div className="stat-card-v2">
+          <div className="stat-card-v2__info">
+            <div className="stat-card-v2__label">已读</div>
+            <div className="stat-card-v2__value" style={{ color: '#86909c' }}>{readCount}</div>
+            <div className="stat-card-v2__desc">已查看</div>
+          </div>
+          <div className="stat-card-v2__icon" style={{ background: '#f5f7fa', color: '#86909c' }}>
+            <MailOpen size={20} />
+          </div>
         </div>
       </div>
 
-      {/* Tab 切换 */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
-        {(['messages', 'notices'] as Tab[]).map((t) => (
+      {/* 页面标题 */}
+      <div style={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        marginTop: 16,
+        marginBottom: 12,
+        gap: 8,
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--t1)', margin: 0 }}>
+            消息中心
+          </h2>
+        </div>
+      </div>
+
+      <div className="segmented-control">
+        {[
+          { value: '', label: '全部' },
+          { value: 'unread', label: '未读' },
+          { value: 'notice', label: '公告' },
+        ].map(t => (
           <button
-            key={t}
-            onClick={() => setTab(t)}
-            style={{
-              padding: '8px 20px',
-              background: 'none',
-              border: 'none',
-              borderBottom: tab === t ? '2px solid var(--accent)' : '2px solid transparent',
-              color: tab === t ? 'var(--accent)' : 'var(--text-dim)',
-              fontWeight: tab === t ? 700 : 500,
-              fontSize: 14,
-              cursor: 'pointer',
-              transition: 'all 0.15s',
-              marginBottom: -1,
-            }}
+            key={t.value}
+            className={`seg-item ${filter === t.value ? 'is-active' : ''}`}
+            onClick={() => { setFilter(t.value); setPage(1); }}
           >
-            {t === 'messages' ? '站内信' : '公告'}
+            {t.label}
           </button>
         ))}
       </div>
 
-      {/* 消息列表 */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {loading ? (
-          Array.from({ length: 6 }).map((_, i) => (
-            <div
-              key={i}
-              style={{
-                background: 'var(--bg-card)',
-                border: '1px solid var(--border)',
-                borderRadius: 10,
-                padding: '14px 18px',
-                display: 'flex',
-                alignItems: 'center',
-                gap: 10,
-              }}
-            >
-              <span className="skeleton" style={{ width: 7, height: 7, borderRadius: '50%', flexShrink: 0 }} />
-              <span className="skeleton" style={{ flex: 1, height: 14 }} />
-              <span className="skeleton" style={{ width: 60, height: 12, flexShrink: 0 }} />
-            </div>
-          ))
-        ) : items.length === 0 ? (
-          <div className="empty-state">
-            <div className="empty-state-icon"><Bell size={36} style={{ opacity: 0.3 }} /></div>
-            <div className="empty-state-text">暂无{tab === 'messages' ? '站内信' : '公告'}</div>
-          </div>
-        ) : items.map((m, idx) => (
-          <div
-            key={m.id}
-            className="data-enter"
-            onClick={() => handleOpen(m)}
-            style={{
-              animationDelay: `${idx * 35}ms`,
-              background: 'var(--bg-card)',
-              border: `1px solid ${selected?.id === m.id ? 'var(--accent)' : 'var(--border)'}`,
-              borderRadius: 10,
-              padding: '14px 18px',
-              cursor: 'pointer',
-              transition: 'all 0.15s',
-              opacity: tab === 'messages' && !m.is_read ? 1 : 0.75,
-            }}
-            onMouseEnter={(e) => (e.currentTarget.style.borderColor = 'var(--border-light)')}
-            onMouseLeave={(e) => (e.currentTarget.style.borderColor = selected?.id === m.id ? 'var(--accent)' : 'var(--border)')}
-          >
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              {tab === 'messages' && !m.is_read && (
-                <span style={{ width: 7, height: 7, borderRadius: '50%', background: 'var(--accent)', flexShrink: 0, display: 'inline-block' }} />
-              )}
-              {m.pinned && <Pin size={12} style={{ color: 'var(--accent)', flexShrink: 0 }} />}
-              <span style={{
-                fontWeight: (tab === 'messages' && !m.is_read) ? 700 : 500,
-                color: 'var(--text)',
-                fontSize: 14,
-                flex: 1,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}>
-                {m.title}
-              </span>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)', flexShrink: 0 }}>
-                {new Date(m.created_at).toLocaleDateString('zh-CN')}
-              </span>
-            </div>
-          </div>
-        ))}
+      {/* 操作栏 */}
+      <div className="action-bar" style={{ marginTop: 12 }}>
+        <button className="btn-secondary-lg" onClick={() => { setPage(1); load(1); fetchUnreadCount(); }}>
+          <RefreshCw className="refresh-icon" size={14} /> 刷新
+        </button>
       </div>
 
-      {/* 分页 */}
-      {totalPages > 1 && (
-        <div className="pagination">
-          <button className="page-btn" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page === 1}>‹</button>
-          {Array.from({ length: totalPages }, (_, i) => i + 1)
-            .slice(Math.max(0, page - 3), Math.min(totalPages, page + 2))
-            .map((p) => (
-              <button key={p} className={`page-btn ${p === page ? 'active' : ''}`} onClick={() => setPage(p)}>{p}</button>
-            ))}
-          <button className="page-btn" onClick={() => setPage((p) => Math.min(totalPages, p + 1))} disabled={page >= totalPages}>›</button>
+      {/* 消息列表 */}
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: 60 }}>
+          <span className="spinner" />
         </div>
-      )}
+      ) : filtered.length === 0 ? (
+        <div className="data-card" style={{ textAlign: 'center', padding: '48px 0', color: 'var(--t3)' }}>
+          <Bell size={40} style={{ opacity: 0.3, marginBottom: 12 }} />
+          <div>暂无消息</div>
+        </div>
+      ) : (
+        <>
+          {filtered.map(msg => {
+            const isNotice = msg.msg_type === 'notice';
+            return (
+            <div
+              key={msg.id}
+              className={`data-card ${msg.pinned ? 'message-card--pinned' : ''}`}
+              style={{
+                maxWidth: '100%',
+                overflow: 'hidden',
+                borderLeft: !msg.read ? '3px solid var(--pri)' : '3px solid transparent',
+                marginBottom: 8,
+              }}
+            >
+              {/* 卡片头部 */}
+              <div className="data-card__header">
+                <div className="data-card__title" style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                    {!msg.read && (
+                      <span
+                        style={{
+                          width: 8, height: 8, borderRadius: '50%',
+                          background: '#ff4d4f', display: 'inline-block', flexShrink: 0,
+                        }}
+                      />
+                    )}
+                    <span style={{
+                      fontSize: 15,
+                      fontWeight: msg.read ? 500 : 600,
+                      lineHeight: 1.4,
+                    }}>
+                      {msg.title}
+                    </span>
+                    {msg.pinned && (
+                      <Pin size={12} style={{ color: '#ff4d4f', flexShrink: 0 }} />
+                    )}
+                  </div>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                  {msg.read ? (
+                    <span className="message-read-badge">
+                      <Check size={12} /> 已读
+                    </span>
+                  ) : (
+                    <button
+                      className="message-read-btn"
+                      onClick={() => markRead(msg.id)}
+                    >
+                      <Eye size={12} /> 阅读
+                    </button>
+                  )}
+                  {isNotice && (
+                    <span className="tag-chip tag-chip--blue" style={{ marginLeft: 0 }}>公告</span>
+                  )}
+                </div>
+              </div>
 
-      {/* 消息详情弹窗 */}
-      {selected && (
-        <div className="modal-overlay" onClick={() => setSelected(null)}>
-          <div className="modal" style={{ maxWidth: 680, width: '90vw' }} onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 16 }}>
-              <h2 className="modal-title" style={{ margin: 0, fontSize: 17, flex: 1 }}>{selected.title}</h2>
-              <button
-                onClick={() => setSelected(null)}
-                style={{ background: 'none', border: 'none', color: 'var(--text-muted)', cursor: 'pointer', padding: 4, fontSize: 18, lineHeight: 1 }}
-              >✕</button>
+              {/* 消息内容 */}
+              <div className="message-content-box">
+                {msg.content}
+                  {msg.msg_type==='notice' && Number((msg as any).reward_amount||0)>0 && <div style={{marginTop:10}}><button className="btn-secondary-lg" style={{height:30,fontSize:12,color:(msg as any).reward_claimed?'#999':'#fa8c16'}} disabled={(msg as any).reward_claimed} onClick={(e)=>{e.stopPropagation(); claimReward(msg);}}>{(msg as any).reward_claimed?'奖励已领取':`领取余额奖励 ¥${Number((msg as any).reward_amount).toFixed(2)}`}</button></div>}
+              </div>
+
+              {/* 底部信息 */}
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginTop: 10,
+                  fontSize: 12,
+                }}
+              >
+                <span style={{ color: 'var(--t3)' }}>
+                  {new Date(msg.created_at).toLocaleString('zh-CN')}
+                  {msg.read && msg.read_at && (
+                    <span style={{ marginLeft: 10, color: 'var(--t3)' }}>
+                      已读 {new Date(msg.read_at).toLocaleString('zh-CN')}
+                    </span>
+                  )}
+                </span>
+              </div>
             </div>
-            <p style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 20 }}>
-              {new Date(selected.created_at).toLocaleString('zh-CN')}
-            </p>
-            <div style={{
-              color: 'var(--text-dim)',
-              fontSize: 14,
-              lineHeight: 1.8,
-              whiteSpace: 'pre-wrap',
-              wordBreak: 'break-word',
-            }}>
-              {selected.content}
+          );
+          })}
+
+          {/* 分页 */}
+          {total > PAGE_SIZE && (
+            <div className="pagination-v2">
+              <span>共 {<AnimatedNumber value={total} />} 条数据</span>
+              <div className="pagination-v2__btns">
+                <button
+                  className="pagination-v2__btn"
+                  onClick={() => setPage(p => Math.max(1, p - 1))}
+                  disabled={page === 1}
+                >
+                  &lt;
+                </button>
+                {Array.from({ length: Math.min(totalPages, 5) }, (_, i) => {
+                  let start = Math.max(1, page - 2);
+                  if (start + 4 > totalPages) start = Math.max(1, totalPages - 4);
+                  const p = start + i;
+                  if (p > totalPages) return null;
+                  return (
+                    <button
+                      key={p}
+                      className={`pagination-v2__btn ${p === page ? 'is-active' : ''}`}
+                      onClick={() => setPage(p)}
+                    >
+                      {p}
+                    </button>
+                  );
+                })}
+                <button
+                  className="pagination-v2__btn"
+                  onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                  disabled={page >= totalPages}
+                >
+                  &gt;
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
+          )}
+        </>
       )}
     </div>
   );
 }
-

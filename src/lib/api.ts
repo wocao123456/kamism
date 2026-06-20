@@ -84,6 +84,10 @@ export const adminApi = {
   getMerchants: (params?: { page?: number; page_size?: number; keyword?: string; plan?: string }) => api.get('/admin/merchants', { params }),
   updateMerchantStatus: (id: string, status: string) => api.patch(`/admin/merchants/${id}/status`, { status }),
   updateMerchantPlan: (id: string, plan: string, expires_days?: number) => api.patch(`/admin/merchants/${id}/plan`, { plan, expires_days }),
+  grantMerchantBalance: (id: string, data: { amount: number; note?: string }) => api.post(`/admin/merchants/${id}/grant-balance`, data),
+  grantMerchantBalanceScoped: (data: { amount: number; note?: string; target_type: string; target_email?: string }) => api.post('/admin/merchants/grant-balance', data),
+  grantMerchantPlan: (id: string, data: { plan: string; expires_days?: number }) => api.post(`/admin/merchants/${id}/grant-plan`, data),
+  grantMerchantPlanScoped: (data: { plan: string; expires_days?: number; target_type: string; target_email?: string }) => api.post('/admin/merchants/grant-plan', data),
   getPlanConfigs: () => api.get('/admin/plan-configs'),
   updatePlanConfig: (id: string, data: any) => api.patch(`/admin/plan-configs/${id}`, data),
   createPlanConfig: (data: any) => api.post('/admin/plan-configs', data),
@@ -139,9 +143,11 @@ export const activationsApi = {
 export const merchantApi = {
   getProfile: () => api.get('/merchant/profile'),
   dashboardStats: (range?: 'week' | 'month' | 'year') => api.get('/merchant/dashboard-stats', { params: { range } }),
+  balanceHistory: (page = 1, pageSize = 20) => api.get('/merchant/balance-history', { params: { page, page_size: pageSize } }),
   changePassword: (data: { old_password: string; new_password: string }) => api.post('/merchant/change-password', data),
   regenerateApiKey: () => api.post('/merchant/regenerate-apikey'),
   redeemRechargeCode: (code: string) => api.post('/merchant/recharge/redeem', { code }),
+  purchasePlan: (data: { plan: string; billing_key?: string }) => api.post('/merchant/purchase', data),
 };
 
 export const plansApi = {
@@ -150,7 +156,7 @@ export const plansApi = {
 
 export const adminMessagesApi = {
   list: (params?: { page?: number; page_size?: number; msg_type?: string }) => api.get('/admin/messages', { params }),
-  send: (data: { msg_type: string; title: string; content: string; target_type?: string; target_id?: string; target_email?: string; pinned?: boolean; expires_at?: string }) => api.post('/admin/messages', data),
+  send: (data: { msg_type: string; title: string; content: string; target_type?: string; target_id?: string; target_email?: string; pinned?: boolean; reward_amount?: number; expires_at?: string }) => api.post('/admin/messages', data),
   update: (id: string, data: { title?: string; content?: string; pinned?: boolean; expires_at?: string }) => api.patch(`/admin/messages/${id}`, data),
   delete: (id: string) => api.delete(`/admin/messages/${id}`),
 };
@@ -160,6 +166,8 @@ export const merchantMessagesApi = {
   listMessages: (params?: { page?: number; page_size?: number }) => api.get('/merchant/messages', { params }),
   unreadCount: () => api.get('/merchant/messages/unread_count'),
   markRead: (id: string) => api.post(`/merchant/messages/${id}/read`),
+  markAllRead: () => api.post('/merchant/messages/read_all'),
+  claimReward: (id: string) => api.post(`/merchant/messages/${id}/claim_reward`),
 };
 
 export function getWsUrl(): string {
@@ -192,6 +200,9 @@ export const blacklistApi = {
   listDevices: (params?: { page?: number; page_size?: number }) => api.get('/blacklist/devices', { params }),
   addDevice: (device_id: string, reason?: string) => api.post('/blacklist/devices', { device_id, reason }),
   removeDevice: (id: string) => api.delete(`/blacklist/devices/${id}`),
+  listCards: (params?: { page?: number; page_size?: number }) => api.get('/blacklist/cards', { params }),
+  addCard: (card_key: string, reason?: string) => api.post('/blacklist/cards', { card_key, reason }),
+  removeCard: (id: string) => api.delete(`/blacklist/cards/${id}`),
   listAlerts: (params?: { page?: number; page_size?: number }) => api.get('/blacklist/alerts', { params }),
   unreadAlertCount: () => api.get('/blacklist/alerts/unread_count'),
   markAlertRead: (id: string) => api.post(`/blacklist/alerts/${id}/read`),

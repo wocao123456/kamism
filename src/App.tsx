@@ -8,6 +8,7 @@ import ConfirmDialog from './components/ConfirmDialog';
 import Login from './pages/auth/Login';
 import Register from './pages/auth/Register';
 import ResetPassword from './pages/auth/ResetPassword';
+import VerifyEmail from './pages/auth/VerifyEmail';
 import OAuthCallback from './pages/auth/OAuthCallback';
 import InstallGuide from './pages/auth/InstallGuide';
 
@@ -38,6 +39,14 @@ const PageFallback = () => (
   </div>
 );
 
+function homeFor(role?: string | null) {
+  return role === 'admin' ? '/admin/dashboard' : role === 'merchant' ? '/dashboard' : '/login';
+}
+function PublicAuthRoute({ children }: { children: React.ReactNode }) {
+  const { token, role } = useAuthStore();
+  if (token) return <Navigate to={homeFor(role)} replace />;
+  return <>{children}</>;
+}
 function RequireAuth({ children, role }: { children: React.ReactNode; role?: string | string[] }) {
   const { token, role: userRole } = useAuthStore();
   const viewMode = useAuthStore.getState().viewMode;
@@ -82,25 +91,26 @@ function AppRoutes() {
   return (
     <>
       <Toaster
-        position="top-right"
+        position="top-center"
         toastOptions={{
           style: {
-            background: 'var(--bg-card)',
-            color: 'var(--text)',
-            border: '1px solid var(--border-light)',
-            fontFamily: 'var(--sans)',
-            fontSize: '13px',
+            background: '#fff',
+            color: '#1d2129',
+            border: '1px solid #f0f0f0',
+            fontFamily: '"Inter", PingFang SC, Microsoft YaHei, sans-serif',
+            fontSize: '12.5px',
           },
-          success: { iconTheme: { primary: 'var(--success)', secondary: 'var(--bg-card)' } },
-          error:   { iconTheme: { primary: 'var(--danger)',  secondary: 'var(--bg-card)' } },
+          success: { iconTheme: { primary: '#22c55e', secondary: '#f0fdf4' } },
+          error:   { iconTheme: { primary: '#ef4444', secondary: '#fef2f2' } },
         }}
       />
       <ConfirmDialog />
       <Suspense fallback={<PageFallback />}>
         <Routes>
-          <Route path="/login"          element={<Login />} />
-          <Route path="/register"       element={<Register />} />
-          <Route path="/reset-password" element={<ResetPassword />} />
+          <Route path="/login"          element={<PublicAuthRoute><Login /></PublicAuthRoute>} />
+          <Route path="/register"       element={<PublicAuthRoute><Register /></PublicAuthRoute>} />
+          <Route path="/reset-password" element={<PublicAuthRoute><ResetPassword /></PublicAuthRoute>} />
+          <Route path="/verify-email" element={<PublicAuthRoute><VerifyEmail /></PublicAuthRoute>} />
           <Route path="/oauth/callback" element={<OAuthCallback />} />
           <Route path="/install" element={<InstallGuide />} />
 

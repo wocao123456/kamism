@@ -76,12 +76,9 @@ pub fn cards_router(state: AppState) -> Router<AppState> {
         .route_layer(middleware::from_fn_with_state(state, auth_middleware))
 }
 
-async fn get_admin_merchant_id(pool: &sqlx::PgPool) -> Uuid {
-    sqlx::query_as::<_, (Uuid,)>("SELECT id FROM merchants WHERE username='admin' LIMIT 1")
-        .fetch_optional(pool).await
-        .ok().flatten()
-        .map(|(id,)| id)
-        .unwrap_or_default()
+/// 从 claims 解析商户 ID
+async fn get_admin_merchant_id(claims: &Claims) -> Uuid {
+    Uuid::parse_str(&claims.sub).unwrap_or_default()
 }
 
 async fn list_cards(
@@ -89,11 +86,7 @@ async fn list_cards(
     Extension(claims): Extension<Claims>,
     Query(q): Query<CardQuery>,
 ) -> Json<Value> {
-    let merchant_id = if claims.role == "admin" {
-        get_admin_merchant_id(&state.pool).await
-    } else {
-        Uuid::parse_str(&claims.sub).unwrap_or_default()
-    };
+    let merchant_id = get_admin_merchant_id(&claims).await;
     let page = q.page.unwrap_or(1).max(1);
     let page_size = q.page_size.unwrap_or(20).min(100);
     let offset = (page - 1) * page_size;
@@ -160,11 +153,7 @@ async fn export_cards_csv(
     Extension(claims): Extension<Claims>,
     Query(q): Query<CardQuery>,
 ) -> Result<Response<String>, StatusCode> {
-    let merchant_id = if claims.role == "admin" {
-        get_admin_merchant_id(&state.pool).await
-    } else {
-        Uuid::parse_str(&claims.sub).unwrap_or_default()
-    };
+    let merchant_id = get_admin_merchant_id(&claims).await;
 
     let mut cards: Vec<Card> = {
         let mut sql = "SELECT * FROM cards WHERE merchant_id = $1".to_string();
@@ -243,14 +232,7 @@ async fn generate_cards(
     Extension(claims): Extension<Claims>,
     Json(body): Json<GenerateCardsRequest>,
 ) -> Json<Value> {
-    let merchant_id = if claims.role == "admin" {
-        get_admin_merchant_id(&state.pool).await
-    } else {
-        match Uuid::parse_str(&claims.sub) {
-            Ok(id) => id,
-            Err(_) => return Json(json!({"success": false, "message": "无效用户ID"})),
-        }
-    };
+    let merchant_id = get_admin_merchant_id(&claims).await;
 
     if body.count == 0 || body.count > 1000 {
         return Json(json!({"success": false, "message": "生���数量需在 1-1000 之间"}));
@@ -419,11 +401,7 @@ async fn get_card(
     Extension(claims): Extension<Claims>,
     Path(id): Path<Uuid>,
 ) -> Json<Value> {
-    let merchant_id = if claims.role == "admin" {
-        get_admin_merchant_id(&state.pool).await
-    } else {
-        Uuid::parse_str(&claims.sub).unwrap_or_default()
-    };
+    let merchant_id = get_admin_merchant_id(&claims).await;
     let mut card: Option<Card> = sqlx::query_as(
         "SELECT * FROM cards WHERE id = $1 AND (merchant_id = $2 OR $3 = 'admin')",
     )
@@ -452,11 +430,7 @@ async fn delete_card(
     Extension(claims): Extension<Claims>,
     Path(id): Path<Uuid>,
 ) -> Json<Value> {
-    let merchant_id = if claims.role == "admin" {
-        get_admin_merchant_id(&state.pool).await
-    } else {
-        Uuid::parse_str(&claims.sub).unwrap_or_default()
-    };
+    let merchant_id = get_admin_merchant_id(&claims).await;
     let result = sqlx::query(
         "DELETE FROM cards WHERE id = $1 AND (merchant_id = $2 OR $3 = 'admin') AND status = 'unused'",
     )
@@ -478,11 +452,7 @@ async fn disable_card(
     Extension(claims): Extension<Claims>,
     Path(id): Path<Uuid>,
 ) -> Json<Value> {
-    let merchant_id = if claims.role == "admin" {
-        get_admin_merchant_id(&state.pool).await
-    } else {
-        Uuid::parse_str(&claims.sub).unwrap_or_default()
-    };
+    let merchant_id = get_admin_merchant_id(&claims).await;
     let result = if claims.role == "admin" {
         sqlx::query(
             "UPDATE cards SET status = 'disabled', admin_disabled = TRUE WHERE id = $1",
@@ -512,11 +482,7 @@ async fn enable_card(
     Extension(claims): Extension<Claims>,
     Path(id): Path<Uuid>,
 ) -> Json<Value> {
-    let merchant_id = if claims.role == "admin" {
-        get_admin_merchant_id(&state.pool).await
-    } else {
-        Uuid::parse_str(&claims.sub).unwrap_or_default()
-    };
+    let merchant_id = get_admin_merchant_id(&claims).await;
     let result = if claims.role == "admin" {
         sqlx::query(
             "UPDATE cards SET status = 'unused', admin_disabled = FALSE WHERE id = $1 AND status = 'disabled'",
@@ -552,11 +518,7 @@ async fn batch_update_card_status(
     if body.ids.len() > 500 {
         return Json(json!({"success": false, "message": "单次批量操作最多 500 张"}));
     }
-    let merchant_id = if claims.role == "admin" {
-        get_admin_merchant_id(&state.pool).await
-    } else {
-        Uuid::parse_str(&claims.sub).unwrap_or_default()
-    };
+    let merchant_id = get_admin_merchant_id(&claims).await;
 
     let result = match body.action.as_str() {
         "disabled" => {
@@ -621,11 +583,7 @@ async fn batch_extend_cards(
     if body.days == 0 {
         return Json(json!({"success": false, "message": "days 不能为 0"}));
     }
-    let merchant_id = if claims.role == "admin" {
-        get_admin_merchant_id(&state.pool).await
-    } else {
-        Uuid::parse_str(&claims.sub).unwrap_or_default()
-    };
+    let merchant_id = get_admin_merchant_id(&claims).await;
     let ownership = if claims.role == "admin" {
         "TRUE".to_string()
     } else {
@@ -671,11 +629,7 @@ async fn card_group_stats(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
 ) -> Json<Value> {
-    let merchant_id = if claims.role == "admin" {
-        get_admin_merchant_id(&state.pool).await
-    } else {
-        Uuid::parse_str(&claims.sub).unwrap_or_default()
-    };
+    let merchant_id = get_admin_merchant_id(&claims).await;
     let where_clause = format!("merchant_id = '{}'", merchant_id);
 
     let sql = format!(

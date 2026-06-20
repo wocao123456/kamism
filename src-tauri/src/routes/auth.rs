@@ -36,7 +36,7 @@ use crate::{
     utils::{
         card_gen::generate_api_key,
         jwt::{generate_token, generate_refresh_token, verify_refresh_token},
-        mailer::{load_mailer_config, send_verify_code},
+        mailer::{load_mailer_config, send_verify_code, send_reset_code_email, send_change_email_code},
     },
 };
 use axum::{
@@ -63,6 +63,7 @@ pub struct RegisterRequest {
 #[derive(Deserialize)]
 pub struct SendCodeRequest {
     pub email: String,
+    pub scene: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -102,8 +103,10 @@ async fn send_code(
     State(state): State<AppState>,
     Json(body): Json<SendCodeRequest>,
 ) -> Json<Value> {
+    let scene = body.scene.as_deref().unwrap_or("register");
+    let is_change_email = scene == "change_email";
     let register_enabled = sqlx::query_as::<_, (serde_json::Value,)>("SELECT value FROM system_config WHERE key=$1").bind("auth.register_enabled").fetch_optional(&state.pool).await.ok().flatten().and_then(|v| v.0.as_bool()).unwrap_or(true);
-    if !register_enabled {
+    if !register_enabled && !is_change_email {
         return Json(json!({"success": false, "message": "注册暂未开放"}));
     }
     if !body.email.contains('@') {
@@ -116,7 +119,7 @@ async fn send_code(
             .fetch_optional(&state.pool)
             .await
             .unwrap_or(None);
-    if exists.is_some() {
+    if exists.is_some() && !is_change_email {
         return Json(json!({"success": false, "message": "该邮箱已注册"}));
     }
     let mut redis = state.redis.clone();
@@ -130,11 +133,12 @@ async fn send_code(
         .take(6)
         .map(|d| char::from_digit(d, 10).unwrap())
         .collect();
-    let code_key = format!("code:verify:{}", body.email);
+    let code_key = if is_change_email { format!("email-code:{}", body.email) } else { format!("code:verify:{}", body.email) };
     let _: () = redis.set_ex(&code_key, &code, 600).await.unwrap_or(());
     let _: () = redis.set_ex(&cooldown_key, "1", 60).await.unwrap_or(());
     let mailer_config = match load_mailer_config(&state.pool).await { Ok(c) => c, Err(e) => { tracing::warn!("邮件服务不可用: {}", e); let _: () = redis.del(&code_key).await.unwrap_or(()); let _: () = redis.del(&cooldown_key).await.unwrap_or(()); return Json(json!({"success": false, "message": e.to_string()})); } };
-    match send_verify_code(&mailer_config, &body.email, &code).await {
+    let send_result = if is_change_email { send_change_email_code(&mailer_config, &body.email, &code).await } else { send_verify_code(&mailer_config, &body.email, &code).await };
+    match send_result {
         Ok(_) => Json(json!({"success": true, "message": "验证码已发送，请查收邮件"})),
         Err(e) => {
             tracing::error!("发送验证码邮件失败: {}", e);
@@ -348,6 +352,19 @@ async fn login(
         return Json(json!({"success": false, "message": "邮箱或密码错误"}));
     }
 
+    // 系统设置关闭商户页面时：禁止商户登录，直接返回明确提示，避免登录后白屏/打不开。
+    let merchant_page_enabled: bool = sqlx::query_as::<_, (bool,)>(
+        "SELECT COALESCE((SELECT (value #>> '{}')::boolean FROM system_config WHERE key = $1), TRUE)"
+    )
+    .bind("merchant.page_enabled")
+    .fetch_one(&state.pool)
+    .await
+    .map(|r| r.0)
+    .unwrap_or(true);
+    if !merchant_page_enabled {
+        return Json(json!({"success": false, "message": "商户页面已关闭，请联系管理员"}));
+    }
+
     let token = match generate_token(&merchant.id, "merchant", &merchant.email, &state.jwt_secret) {
         Ok(t) => t,
         Err(_) => return Json(json!({"success": false, "message": "生成令牌失败"})),
@@ -474,7 +491,7 @@ async fn send_reset_code(
     let _: () = redis.set_ex(&code_key, &code, 600).await.unwrap_or(());
     let _: () = redis.set_ex(&cooldown_key, "1", 60).await.unwrap_or(());
     let mailer_config = match load_mailer_config(&state.pool).await { Ok(c) => c, Err(e) => { tracing::warn!("邮件服务不可用: {}", e); let _: () = redis.del(&code_key).await.unwrap_or(()); let _: () = redis.del(&cooldown_key).await.unwrap_or(()); return Json(json!({"success": false, "message": e.to_string()})); } };
-    match send_verify_code(&mailer_config, &body.email, &code).await {
+    match send_reset_code_email(&mailer_config, &body.email, &code).await {
         Ok(_) => Json(json!({"success": true, "message": "验证码已发送，请查收邮件"})),
         Err(e) => {
             tracing::error!("发送密码重置验证码失败: {}", e);

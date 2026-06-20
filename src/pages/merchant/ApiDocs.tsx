@@ -1,239 +1,133 @@
-import { useState, useEffect } from 'react';
-import { useAuthStore } from '../../stores/auth';
-import { Copy, Check } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { BookOpen, Copy, Key, Lock, Menu, Search, X } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useAuthStore } from '../../stores/auth';
 
-const BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:9527';
+type Method = 'POST';
+type Param = { name: string; type: string; required?: boolean; description: string; example?: string };
+type Endpoint = { id: string; title: string; method: Method; path: string; group: string; auth: 'api_key' | 'bearer'; description: string; params: Param[]; response: string; note?: string };
+const BASE_URL = import.meta.env.VITE_API_URL || (typeof window !== 'undefined' ? window.location.origin : 'http://localhost:9527');
 
-type Tab = 'activate' | 'verify' | 'unbind' | 'sign' | 'encrypt' | 'decrypt';
-
-interface Endpoint {
-  id: Tab;
-  label: string;
-  method: 'POST';
-  path: string;
-  desc: string;
-  headers: { key: string; value: string; desc: string }[];
-  body: Record<string, unknown>;
-  response: object;
-  note?: string;
-}
-
-function buildEndpoints(apiKey: string): Endpoint[] {
+function endpoints(apiKey: string): Endpoint[] {
   return [
-    {
-      id: 'activate', label: '激活', method: 'POST', path: '/v1/activate',
-      desc: '用卡密激活软件并绑定当前设备。首次激活时自动完成绑定；若该设备已绑定此卡密则直接返回成功。',
-      headers: [{ key: 'Content-Type', value: 'application/json', desc: '固定值' }],
-      body: { api_key: apiKey, app_id: '<app_id>', card_code: '<card_code>', device_id: '<device_id>', device_name: '<optional>' },
-      response: { success: true, message: '激活成功', data: { expires_at: '2026-12-31T00:00:00Z', remaining_days: 276, max_devices: 3, current_devices: 1 } },
-      note: 'device_id 建议使用设备唯一标识（如主板序列号、MAC 地址等），长度不超过 128 字符。device_name 为可选字段。',
-    },
-    {
-      id: 'verify', label: '验证', method: 'POST', path: '/v1/verify',
-      desc: '每次软件启动时调用，校验卡密是否有效且设备已绑定。建议每次启动必验，防离线破解。服务端有 60s Redis 缓存，高频调用无额外性能损耗。',
-      headers: [{ key: 'Content-Type', value: 'application/json', desc: '固定值' }],
-      body: { api_key: apiKey, app_id: '<app_id>', card_code: '<card_code>', device_id: '<device_id>' },
-      response: { success: true, valid: true, message: '卡密有效', data: { expires_at: '2026-12-31T00:00:00Z', remaining_days: 276, max_devices: 3, current_devices: 1 } },
-      note: '返回 success: false 或 valid: false 时软件应拒绝运行，并展示 message 内容给用户。',
-    },
-    {
-      id: 'unbind', label: '解绑', method: 'POST', path: '/v1/unbind',
-      desc: '解除指定设备与卡密的绑定关系，释放设备配额。解绑后该设备需重新激活才可使用。',
-      headers: [{ key: 'Content-Type', value: 'application/json', desc: '固定值' }],
-      body: { api_key: apiKey, app_id: '<app_id>', card_code: '<card_code>', device_id: '<device_id>' },
-      response: { success: true, message: '设备已解绑' },
-      note: '商户也可以在「激活记录」页面手动解绑设备，无需调用此接口。若解绑后该卡密无绑定设备，卡密状态将自动重置为 unused。',
-    },
-    {
-      id: 'sign', label: '签名', method: 'POST', path: '/api/ts/sign',
-      desc: '使用API管理中配置的签名代码，对传入参数进行签名运算。需要先在API管理中配置签名逻辑（sign_code）。通过Header中Authorization Bearer auth_key鉴权。',
-      headers: [
-        { key: 'Content-Type', value: 'application/json', desc: '固定值' },
-        { key: 'Authorization', value: 'Bearer <auth_key>', desc: 'API管理中获取的auth_key' },
-      ],
-      body: { key_name: '<配置名称>', text: '<待签名原文>', params: { '<自定义参数>': '<value>' } },
-      response: { code: 200, msg: 'success', data: { key_name: 'sign', source: 'sha256', result: '<signature>', card_key: 'internal', created_at: '2026-05-29T00:00:00Z' } },
-      note: '签名代码在API管理中配置，支持Python代码自定义签名逻辑。',
-    },
-    {
-      id: 'encrypt', label: '加密', method: 'POST', path: '/api/ts/encrypt',
-      desc: '使用API管理中配置的加密代码，对传入文本进行加密。需要先在API管理中配置加密逻辑（encrypt_code）。通过Header中Authorization Bearer auth_key鉴权。',
-      headers: [
-        { key: 'Content-Type', value: 'application/json', desc: '固定值' },
-        { key: 'Authorization', value: 'Bearer <auth_key>', desc: 'API管理中获取的auth_key' },
-      ],
-      body: { key_name: '<配置名称>', text: '<待加密文本>', params: { '<自定义参数>': '<value>' } },
-      response: { code: 200, msg: 'success', data: { key_name: 'enc', source: 'custom', result: '<encrypted>', card_key: 'internal', created_at: '2026-05-29T00:00:00Z' } },
-      note: '加密代码在API管理中配置，params参数会作为Python脚本输入，text字段为原始文本。',
-    },
-    {
-      id: 'decrypt', label: '解密', method: 'POST', path: '/api/ts/decrypt',
-      desc: '使用API管理中配置的解密代码，对密文进行解密还原。需要先在API管理中配置解密逻辑（decrypt_code）。通过Header中Authorization Bearer auth_key鉴权。',
-      headers: [
-        { key: 'Content-Type', value: 'application/json', desc: '固定值' },
-        { key: 'Authorization', value: 'Bearer <auth_key>', desc: 'API管理中获取的auth_key' },
-      ],
-      body: { key_name: '<配置名称>', text: '<待解密密文>', params: { '<自定义参数>': '<value>' } },
-      response: { code: 200, msg: 'success', data: { key_name: 'dec', source: 'custom', result: '<decrypted>', card_key: 'internal', created_at: '2026-05-29T00:00:00Z' } },
-      note: '解密代码在API管理中配置，params参数会作为Python脚本输入，text字段为密文。',
-    },
-
+    { id: 'activate', title: '激活卡密', method: 'POST', path: '/v1/activate', group: '授权接口', auth: 'api_key', description: '客户端首次使用卡密时调用，验证卡密并绑定当前设备。设备已绑定时可直接返回成功。', params: [
+      { name: 'api_key', type: 'string', required: true, description: '商户 API Key', example: apiKey },
+      { name: 'app_id', type: 'string', required: true, description: '应用 ID', example: '<app_id>' },
+      { name: 'card_code', type: 'string', required: true, description: '卡密内容', example: '<card_code>' },
+      { name: 'device_id', type: 'string', required: true, description: '设备唯一标识', example: '<device_id>' },
+      { name: 'device_name', type: 'string', description: '设备名称，可选', example: '<optional>' },
+    ], response: JSON.stringify({ success: true, message: '激活成功', data: { expires_at: '2026-12-31T00:00:00Z', remaining_days: 276, max_devices: 3, current_devices: 1 } }, null, 2), note: 'device_id 建议使用主板序列号、MAC、Android ID 等稳定唯一标识，长度不超过 128 字符。' },
+    { id: 'verify', title: '验证授权', method: 'POST', path: '/v1/verify', group: '授权接口', auth: 'api_key', description: '软件启动或关键操作前调用，校验卡密是否有效且当前设备是否已绑定。', params: [
+      { name: 'api_key', type: 'string', required: true, description: '商户 API Key', example: apiKey },
+      { name: 'app_id', type: 'string', required: true, description: '应用 ID', example: '<app_id>' },
+      { name: 'card_code', type: 'string', required: true, description: '卡密内容', example: '<card_code>' },
+      { name: 'device_id', type: 'string', required: true, description: '设备唯一标识', example: '<device_id>' },
+    ], response: JSON.stringify({ success: true, valid: true, message: '卡密有效', data: { expires_at: '2026-12-31T00:00:00Z', remaining_days: 276 } }, null, 2), note: '返回 success:false 或 valid:false 时，客户端应拒绝运行并展示 message。' },
+    { id: 'unbind', title: '解绑设备', method: 'POST', path: '/v1/unbind', group: '授权接口', auth: 'api_key', description: '解除指定设备与卡密的绑定关系，释放设备配额。', params: [
+      { name: 'api_key', type: 'string', required: true, description: '商户 API Key', example: apiKey },
+      { name: 'app_id', type: 'string', required: true, description: '应用 ID', example: '<app_id>' },
+      { name: 'card_code', type: 'string', required: true, description: '卡密内容', example: '<card_code>' },
+      { name: 'device_id', type: 'string', required: true, description: '设备唯一标识', example: '<device_id>' },
+    ], response: JSON.stringify({ success: true, message: '设备已解绑' }, null, 2) },
+    { id: 'sign', title: '签名运算', method: 'POST', path: '/api/ts/sign', group: '算法接口', auth: 'bearer', description: '使用 API 管理中配置的签名代码，对传入参数进行签名运算。', params: [
+      { name: 'key_name', type: 'string', required: true, description: '配置名称', example: 'sign' },
+      { name: 'text', type: 'string', required: true, description: '待签名原文', example: '<text>' },
+      { name: 'params', type: 'object', description: '自定义参数', example: '{}' },
+    ], response: JSON.stringify({ code: 200, msg: 'success', data: { key_name: 'sign', result: '<signature>' } }, null, 2), note: '需要在 Header 中传入 Authorization: Bearer <auth_key>。' },
+    { id: 'encrypt', title: '加密文本', method: 'POST', path: '/api/ts/encrypt', group: '算法接口', auth: 'bearer', description: '使用 API 管理中配置的加密代码，对传入文本进行加密。', params: [
+      { name: 'key_name', type: 'string', required: true, description: '配置名称', example: 'enc' },
+      { name: 'text', type: 'string', required: true, description: '待加密文本', example: '<text>' },
+      { name: 'params', type: 'object', description: '自定义参数', example: '{}' },
+    ], response: JSON.stringify({ code: 200, msg: 'success', data: { key_name: 'enc', result: '<encrypted>' } }, null, 2), note: '需要在 Header 中传入 Authorization: Bearer <auth_key>。' },
+    { id: 'decrypt', title: '解密文本', method: 'POST', path: '/api/ts/decrypt', group: '算法接口', auth: 'bearer', description: '使用 API 管理中配置的解密代码，对密文进行解密还原。', params: [
+      { name: 'key_name', type: 'string', required: true, description: '配置名称', example: 'dec' },
+      { name: 'text', type: 'string', required: true, description: '待解密密文', example: '<encrypted>' },
+      { name: 'params', type: 'object', description: '自定义参数', example: '{}' },
+    ], response: JSON.stringify({ code: 200, msg: 'success', data: { key_name: 'dec', result: '<decrypted>' } }, null, 2), note: '需要在 Header 中传入 Authorization: Bearer <auth_key>。' },
   ];
 }
-
-function CodeBlock({ code, lang = 'json' }: { code: string; lang?: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    navigator.clipboard.writeText(code);
-    setCopied(true);
-    toast.success('已复制');
-    setTimeout(() => setCopied(false), 2000);
-  };
-  return (
-    <div style={{ position: 'relative', marginBottom: 0 }}>
-      <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 1, display: 'flex', alignItems: 'center', gap: 4 }}>
-        <span style={{ fontSize: 10, color: 'var(--text-muted)', fontFamily: 'var(--mono)', textTransform: 'uppercase' }}>{lang}</span>
-        <button onClick={copy} style={{
-          background: 'var(--bg-hover)', border: '1px solid var(--border)',
-          borderRadius: 5, padding: '3px 8px', cursor: 'pointer',
-          color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 4, fontSize: 11,
-        }}>
-          {copied ? <Check size={11} /> : <Copy size={11} />}
-          {copied ? '已复制' : '复制'}
-        </button>
-      </div>
-      <pre className="mono" style={{
-        background: 'var(--bg)', border: '1px solid var(--border)',
-        borderRadius: 8, padding: '14px 16px', paddingRight: 80,
-        fontSize: 12, lineHeight: 1.7, overflowX: 'auto',
-        color: 'var(--text-dim)', margin: 0, whiteSpace: 'pre-wrap', wordBreak: 'break-all',
-      }}>
-        {code}
-      </pre>
-    </div>
-  );
-}
-
-function useIsMobile(bp = 768) {
-  const [m, setM] = useState(() => window.innerWidth <= bp);
-  useEffect(() => {
-    const mq = window.matchMedia(`(max-width: ${bp}px)`);
-    const h = (e: MediaQueryListEvent) => setM(e.matches);
-    mq.addEventListener('change', h);
-    setM(mq.matches);
-    return () => mq.removeEventListener('change', h);
-  }, [bp]);
-  return m;
-}
+function body(ep: Endpoint) { const o: Record<string, string> = {}; ep.params.forEach(p => { o[p.name] = p.example || `<${p.name}>`; }); return JSON.stringify(o, null, 2); }
+function curl(ep: Endpoint) { return `curl -X ${ep.method} '${BASE_URL}${ep.path}' \
+  -H 'Content-Type: application/json'${ep.auth === 'bearer' ? ` \
+  -H 'Authorization: Bearer <auth_key>'` : ''} \
+  -d '${body(ep).replace(/'/g, "\\'")}'`; }
+function js(ep: Endpoint) { return `const res = await fetch('${BASE_URL}${ep.path}', {\n  method: '${ep.method}',\n  headers: {\n    'Content-Type': 'application/json'${ep.auth === 'bearer' ? ",\n    'Authorization': 'Bearer <auth_key>'" : ''}\n  },\n  body: JSON.stringify(${body(ep)})\n});\nconsole.log(await res.json());`; }
+function py(ep: Endpoint) { return `import requests\n\nurl = '${BASE_URL}${ep.path}'\npayload = ${body(ep)}\nheaders = {'Content-Type': 'application/json'}${ep.auth === 'bearer' ? "\nheaders['Authorization'] = 'Bearer <auth_key>'" : ''}\nres = requests.post(url, json=payload, headers=headers)\nprint(res.json())`; }
 
 export default function ApiDocs() {
   const { user } = useAuthStore();
-  const [activeTab, setActiveTab] = useState<Tab>('activate');
-  const isMobile = useIsMobile();
-
-  const apiKey = user?.api_key ?? '<your_api_key>';
-  const endpoints = buildEndpoints(apiKey);
-  const ep = endpoints.find((e) => e.id === activeTab)!;
-
-  const curl = `curl -X POST "${BASE_URL}${ep.path}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(ep.body)}'`;
-
-  const pythonCode = `import requests\n\nurl = "${BASE_URL}${ep.path}"\npayload = ${JSON.stringify(ep.body, null, 4)}\n\nresponse = requests.post(url, json=payload)\nprint(response.json())`;
-
-  return (
-    <div className="fade-in">
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">API 接口文档</h1>
-          <p className="page-subtitle">集成激活、验证、解绑接口到你的软件</p>
+  const all = useMemo(() => endpoints(user?.api_key || '<your_api_key>'), [user?.api_key]);
+  const [active, setActive] = useState('activate');
+  const [open, setOpen] = useState(false);
+  const [kw, setKw] = useState('');
+  const [tab, setTab] = useState<'Shell' | 'JavaScript' | 'Python'>('Shell');
+  const list = all.filter(e => !kw.trim() || `${e.title} ${e.path} ${e.group}`.toLowerCase().includes(kw.trim().toLowerCase()));
+  const current = list.find(e => e.id === active) || list[0] || all[0];
+  const groups = Array.from(new Set(list.map(e => e.group)));
+  const examples = { Shell: curl(current), JavaScript: js(current), Python: py(current) };
+  useEffect(() => {
+    if (!open) return;
+    const scrollY = window.scrollY || document.documentElement.scrollTop || 0;
+    const body = document.body;
+    const html = document.documentElement;
+    const oldBodyStyle = {
+      position: body.style.position,
+      top: body.style.top,
+      left: body.style.left,
+      right: body.style.right,
+      width: body.style.width,
+      overflow: body.style.overflow,
+    };
+    const oldHtmlOverflow = html.style.overflow;
+    html.style.overflow = 'hidden';
+    body.style.position = 'fixed';
+    body.style.top = `-${scrollY}px`;
+    body.style.left = '0';
+    body.style.right = '0';
+    body.style.width = '100%';
+    body.style.overflow = 'hidden';
+    return () => {
+      html.style.overflow = oldHtmlOverflow;
+      body.style.position = oldBodyStyle.position;
+      body.style.top = oldBodyStyle.top;
+      body.style.left = oldBodyStyle.left;
+      body.style.right = oldBodyStyle.right;
+      body.style.width = oldBodyStyle.width;
+      body.style.overflow = oldBodyStyle.overflow;
+      window.scrollTo(0, scrollY);
+    };
+  }, [open]);
+  const copy = (text: string) => { navigator.clipboard.writeText(text); toast.success('已复制'); };
+  const choose = (id: string) => { setActive(id); setOpen(false); setTimeout(() => document.querySelector('.api-content')?.scrollTo({ top: 0, behavior: 'smooth' }), 20); };
+  const menu = <><div className="api-drawer-search"><div className="api-search-box"><Search size={18}/><input value={kw} onChange={e => setKw(e.target.value)} placeholder="搜索接口..." /></div><div className="api-sider-count">共 {list.length} 个接口</div></div><div className="api-sider-menu">{groups.map(g => <div key={g}><div className="api-menu-group-title">{g}</div>{list.filter(e => e.group === g).map(e => <button key={e.id} className={`api-menu-item ${active === e.id ? 'active' : ''}`} onClick={() => choose(e.id)}><span className="api-method-badge api-method-sm api-method-post">POST</span><span>{e.title}</span></button>)}</div>)}</div></>;
+  return <div className="dpage api-docs-page api-docs-unified api-docs-compact">
+    <div className="api-docs-mobile-actions"><button className="btn-secondary-lg" onClick={() => setOpen(true)}><Menu size={14}/>接口列表</button></div>
+    {open && <div className="api-mobile-drawer" onClick={() => setOpen(false)}><aside onClick={e => e.stopPropagation()}><div className="api-drawer-title"><span>接口列表</span><button onClick={() => setOpen(false)}><X size={22}/></button></div>{menu}</aside></div>}
+    <div className="api-unified-layout">
+      <main className="api-main-card">
+        <div className="data-card">
+          <div className="data-card__header"><div className="data-card__title"><BookOpen size={16}/>{current.title}<span className="tag-chip tag-chip--blue">{current.group}</span></div></div>
+          <div className="api-url-line"><span className="status-badge status-badge--success">POST</span><code>{BASE_URL}{current.path}</code><button className="act-log" onClick={() => copy(`${BASE_URL}${current.path}`)}><Copy size={12}/>复制</button></div>
+          <p className="api-desc-v2">{current.description}</p>
+          <div className={`api-auth-tip ${current.auth === 'bearer' ? 'jwt' : ''}`}><Lock size={14}/>{current.auth === 'bearer' ? 'Bearer auth_key 鉴权：Authorization: Bearer <auth_key>' : 'API Key 鉴权：请求体中传入 api_key。'}</div>
+          {current.note && <div className="api-auth-tip note"><Key size={14}/>{current.note}</div>}
         </div>
-      </div>
-
-      <div style={{
-        background: 'rgba(124,106,247,0.07)', border: '1px solid rgba(124,106,247,0.2)',
-        borderRadius: 10, padding: '12px 16px', marginBottom: 24,
-        display: 'flex', alignItems: isMobile ? 'flex-start' : 'center',
-        flexDirection: isMobile ? 'column' : 'row',
-        gap: isMobile ? 6 : 12, flexWrap: 'wrap',
-      }}>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Base URL</span>
-        <code className="mono" style={{ fontSize: 12, color: 'var(--accent)', flex: 1, wordBreak: 'break-all' }}>{BASE_URL}</code>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>你的 API Key</span>
-        <code className="mono" style={{ fontSize: 12, color: 'var(--accent)', background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 5, padding: '2px 8px', wordBreak: 'break-all' }}>
-          {user?.api_key ?? '请在账号设置中查看'}
-        </code>
-      </div>
-
-      <div style={{ display: 'flex', gap: 6, marginBottom: 20, flexWrap: 'wrap' }}>
-        {endpoints.map((e) => (
-          <button key={e.id} onClick={() => setActiveTab(e.id)} style={{
-            padding: '7px 18px', borderRadius: 8, fontSize: 13,
-            fontWeight: activeTab === e.id ? 700 : 500,
-            border: activeTab === e.id ? '1px solid rgba(124,106,247,0.3)' : '1px solid var(--border)',
-            background: activeTab === e.id ? 'var(--accent-glow)' : 'var(--bg-card)',
-            color: activeTab === e.id ? 'var(--accent)' : 'var(--text-dim)',
-            cursor: 'pointer', transition: 'all 0.15s',
-          }}>
-            {e.label}
-          </button>
-        ))}
-      </div>
-
-      <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 16 }}>
-        <div style={{ minWidth: 0, flex: isMobile ? 'none' : '1 1 400px', width: isMobile ? '100%' : undefined }}>
-          <div className="card" style={{ marginBottom: 16 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
-              <span style={{ background: '#10b98122', color: '#10b981', fontFamily: 'var(--mono)', fontSize: 11, fontWeight: 800, padding: '3px 8px', borderRadius: 5, letterSpacing: '0.5px' }}>POST</span>
-              <code className="mono" style={{ fontSize: 13, color: 'var(--text)' }}>{BASE_URL}{ep.path}</code>
-            </div>
-            <p style={{ fontSize: 13, color: 'var(--text-dim)', lineHeight: 1.7, margin: 0 }}>{ep.desc}</p>
-            {ep.note && (
-              <div style={{ marginTop: 12, padding: '8px 12px', background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.2)', borderRadius: 6, fontSize: 12, color: '#d97706', lineHeight: 1.6 }}>
-                {ep.note}
-              </div>
-            )}
-          </div>
-
-          <div className="card" style={{ marginBottom: 16 }}>
-            <p style={{ fontWeight: 700, color: 'var(--text)', marginBottom: 12, fontSize: 13 }}>请求头</p>
-            {ep.headers.map((h) => (
-              <div key={h.key} style={{ padding: '8px 0', borderBottom: '1px solid var(--border)', display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <code className="mono" style={{ fontSize: 11, color: 'var(--accent)', whiteSpace: 'nowrap' }}>{h.key}</code>
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{h.desc}</span>
-                </div>
-                <code className="mono" style={{ fontSize: 11, color: 'var(--text-dim)' }}>{h.value}</code>
-              </div>
-            ))}
-          </div>
-
-          <div className="card">
-            <p style={{ fontWeight: 700, color: 'var(--text)', marginBottom: 12, fontSize: 13 }}>请求体 (JSON)</p>
-            <CodeBlock code={JSON.stringify(ep.body, null, 2)} />
-          </div>
+        <div className="data-card">
+          <div className="data-card__header"><div className="data-card__title">请求参数</div><button className="act-log" onClick={() => copy(body(current))}><Copy size={12}/>复制 JSON</button></div>
+          <div className="api-param-table-v2"><div className="api-param-row-v2 head"><div>参数名</div><div>类型</div><div>必填</div><div>说明 / 示例</div></div>{current.params.map(p => <div className="api-param-row-v2" key={p.name}><div><code>{p.name}</code></div><div>{p.type}</div><div><span className={`status-badge ${p.required ? 'status-badge--danger' : 'status-badge--info'}`}>{p.required ? '必填' : '可选'}</span></div><div>{p.description}<em>{p.example || '-'}</em></div></div>)}</div>
         </div>
-
-        <div style={{ minWidth: 0, flex: isMobile ? 'none' : '1 1 400px', width: isMobile ? '100%' : undefined }}>
-          <div className="card" style={{ marginBottom: 16 }}>
-            <p style={{ fontWeight: 700, color: 'var(--text)', marginBottom: 12, fontSize: 13 }}>响应示例</p>
-            <CodeBlock code={JSON.stringify(ep.response, null, 2)} />
-          </div>
-
-          <div className="card">
-            <p style={{ fontWeight: 700, color: 'var(--text)', marginBottom: 16, fontSize: 13 }}>代码示例</p>
-            <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 12 }}>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>cURL</p>
-                <CodeBlock code={curl} lang="bash" />
-              </div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 6 }}>Python</p>
-                <CodeBlock code={pythonCode} lang="python" />
-              </div>
-            </div>
-          </div>
+        <div className="data-card">
+          <div className="data-card__header"><div className="data-card__title">代码示例</div><button className="act-log" onClick={() => copy(examples[tab])}><Copy size={12}/>复制</button></div>
+          <div className="segmented-control api-code-seg">{(['Shell','JavaScript','Python'] as const).map(t => <button key={t} className={`seg-item ${tab === t ? 'is-active' : ''}`} onClick={() => setTab(t)}>{t}</button>)}</div>
+          <pre className="api-code-block-v2"><code>{examples[tab]}</code></pre>
         </div>
-      </div>
+        <div className="data-card">
+          <div className="data-card__header"><div className="data-card__title">返回响应</div><button className="act-log" onClick={() => copy(current.response)}><Copy size={12}/>复制</button></div>
+          <pre className="api-code-block-v2"><code>{current.response}</code></pre>
+        </div>
+      </main>
+      <aside className="data-card api-menu-card">{menu}</aside>
     </div>
-  );
+    <style>{`.api-unified-layout{display:grid;grid-template-columns:260px 1fr;gap:12px}.api-menu-card{position:sticky;top:12px;align-self:start}.api-drawer-search{margin-bottom:12px}.api-search-box{height:36px;border:1px solid var(--bdl2);border-radius:8px;display:flex;align-items:center;gap:8px;padding:0 10px;background:var(--bg)}.api-search-box input{border:0;outline:0;background:transparent;color:var(--t1);width:100%}.api-sider-count{font-size:12px;color:var(--t3);margin-top:8px}.api-menu-group-title{font-size:12px;color:var(--t3);font-weight:700;margin:12px 0 8px}.api-menu-item{width:100%;height:34px;border:0;background:transparent;color:var(--t2);display:flex;align-items:center;gap:8px;border-radius:8px;padding:0 10px;cursor:pointer}.api-menu-item.active,.api-menu-item:hover{background:var(--pl9,rgba(24,144,255,.08));color:var(--pri)}.api-method-badge{font-size:10px;border-radius:6px;padding:2px 6px;background:#f6ffed;color:#52c41a;border:1px solid #b7eb8f}.api-url-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border:1px solid var(--bdl2);border-radius:8px;background:var(--fcl,rgba(148,163,184,.08));margin:10px 0}.api-url-line code{flex:1;min-width:220px;color:var(--t1);word-break:break-all}.api-desc-v2{font-size:13px;color:var(--t2);line-height:1.7}.api-auth-tip{margin-top:8px;border:1px solid rgba(82,196,26,.25);background:rgba(82,196,26,.08);color:#16a34a;border-radius:8px;padding:10px 12px;font-size:13px;display:flex;gap:8px;align-items:flex-start}.api-auth-tip.jwt{border-color:rgba(250,173,20,.25);background:rgba(250,173,20,.08);color:#b7791f}.api-auth-tip.note{border-color:var(--bdl2);background:var(--fcl,rgba(148,163,184,.08));color:var(--t2)}.api-param-table-v2{overflow:auto}.api-param-row-v2{display:grid;grid-template-columns:150px 90px 80px minmax(220px,1fr);gap:10px;align-items:center;border-bottom:1px solid var(--bdl2);padding:10px 0;font-size:13px;color:var(--t2)}.api-param-row-v2.head{font-weight:700;color:var(--t1)}.api-param-row-v2 em{display:block;font-style:normal;font-family:monospace;color:var(--t3);margin-top:3px}.api-code-seg{margin-bottom:10px}.api-code-block-v2{margin:0;background:#0f172a;color:#d6e4ff;border-radius:10px;padding:14px;overflow:auto;font-size:12px;line-height:1.6}.api-mobile-drawer{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:1000;display:flex;justify-content:flex-end}.api-mobile-drawer aside{width:min(340px,86vw);height:100%;background:var(--bg);padding:16px;overflow:auto}.api-drawer-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;font-weight:700}.api-drawer-title button{border:0;background:transparent;color:var(--t1)}@media(max-width:900px){.api-unified-layout{grid-template-columns:1fr}.api-menu-card{display:none}.api-param-row-v2{grid-template-columns:120px 70px 70px minmax(180px,1fr)}}@media(max-width:600px){.api-param-row-v2{grid-template-columns:1fr;gap:4px}.api-url-line code{min-width:0}.api-docs-unified .page-header{align-items:flex-start}}`}</style>
+  </div>;
 }

@@ -17,6 +17,7 @@ pub mod api_ts;
 pub mod oauth;
 pub mod profile;
 pub mod system_update;
+pub mod system_runtime;
 pub mod system_config;
 
 use axum::{Router, middleware};

@@ -35,7 +35,9 @@ pub fn merchant_router(state: AppState) -> Router<AppState> {
         .route("/merchant/change-password", post(change_password))
         .route("/merchant/regenerate-apikey", post(regenerate_api_key))
         .route("/merchant/op-logs", get(merchant_op_logs))
+        .route("/merchant/balance-history", get(merchant_balance_history))
         .route("/merchant/frontend-log", post(merchant_frontend_log))
+        .route("/merchant/purchase", post(purchase_plan))
         .route_layer(middleware::from_fn_with_state(state, auth_middleware))
 }
 
@@ -61,14 +63,14 @@ async fn get_profile(
                 .unwrap_or_else(|_| m.email.clone());
             let api_key = crate::db::encrypted_fields::EncryptedFieldsOps::decrypt_merchant_api_key(&state.encryptor, &m.api_key)
                 .unwrap_or_default();
-            let extra: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-                "SELECT avatar_url, background_url FROM merchants WHERE id = $1"
+            let extra: Option<(Option<String>, Option<String>, Option<f64>)> = sqlx::query_as(
+                "SELECT avatar_url, background_url, balance::float8 FROM merchants WHERE id = $1"
             )
             .bind(id)
             .fetch_optional(&state.pool)
             .await
             .unwrap_or(None);
-            let (avatar, background_url) = extra.unwrap_or((None, None));
+            let (avatar, background_url, balance) = extra.unwrap_or((None, None, Some(0.0)));
             Json(json!({
                 "success": true,
                 "data": {
@@ -78,6 +80,7 @@ async fn get_profile(
                     "api_key": api_key,
                     "avatar": avatar,
                     "background_url": background_url,
+                    "balance": balance.unwrap_or(0.0),
                     "status": m.status,
                     "plan": m.plan,
                     "plan_expires_at": m.plan_expires_at,
@@ -273,4 +276,131 @@ async fn merchant_frontend_log(State(state): State<AppState>, Extension(claims):
     let user_id = Uuid::parse_str(&claims.sub).ok();
     crate::utils::op_log::log_operation(&state.pool, "merchant", user_id, action, module, detail, "").await;
     Json(json!({"success": true}))
+}
+
+// === 商户购买套餐 ===
+#[derive(Deserialize)]
+pub struct PurchaseRequest {
+    pub plan: String,
+    pub billing_key: Option<String>,
+}
+
+async fn purchase_plan(State(state): State<AppState>, Extension(claims): Extension<Claims>, Json(body): Json<PurchaseRequest>) -> Json<Value> {
+    let merchant_id = match Uuid::parse_str(&claims.sub) {
+        Ok(id) => id,
+        Err(_) => return Json(json!({"success": false, "message": "无效用户ID"})),
+    };
+    let plan_row: Option<(String, String, serde_json::Value)> = sqlx::query_as(
+        "SELECT plan, label, pricing_options FROM plan_configs WHERE plan=$1 AND is_active=true"
+    ).bind(&body.plan).fetch_optional(&state.pool).await.unwrap_or(None);
+    let Some((plan, label, pricing)) = plan_row else {
+        return Json(json!({"success": false, "message": "套餐不存在或已停用"}));
+    };
+    let key = body.billing_key.clone().unwrap_or_else(|| "month".to_string());
+    let price = if let Some(arr) = pricing.as_array() {
+        arr.iter().find(|p| p.get("key").and_then(|v| v.as_str()) == Some(&key))
+            .and_then(|p| p.get("price")).and_then(|v| v.as_f64()).unwrap_or(0.0)
+    } else { 0.0 };
+    let raw_days = if let Some(arr) = pricing.as_array() {
+        arr.iter().find(|p| p.get("key").and_then(|v| v.as_str()) == Some(&key))
+            .and_then(|p| p.get("days")).and_then(|v| v.as_i64()).unwrap_or(30)
+    } else { 30 };
+    if price < 0.0 { return Json(json!({"success": false, "message": "套餐价格异常"})); }
+    let current: Option<(String, Option<chrono::DateTime<chrono::Utc>>, Option<f64>)> = sqlx::query_as(
+        "SELECT plan, plan_expires_at, balance::float8 FROM merchants WHERE id=$1"
+    ).bind(merchant_id).fetch_optional(&state.pool).await.unwrap_or(None);
+    let Some((_current_plan, _current_exp, balance)) = current else {
+        return Json(json!({"success": false, "message": "商户账号不存在"}));
+    };
+    let current_balance = balance.unwrap_or(0.0);
+    if current_balance + 0.000001 < price {
+        return Json(json!({"success": false, "message": format!("余额不足，当前余额 ¥{:.2}，需支付 ¥{:.2}", current_balance, price)}));
+    }
+    // Cap days to avoid PostgreSQL INTERVAL overflow (max ~36500 days ≈ 100 years)
+    let capped_days = std::cmp::min(raw_days, 36500i64);
+    let updated: Option<(f64,)> = sqlx::query_as(
+        "UPDATE merchants SET balance=COALESCE(balance,0)-$1, plan=$2, plan_expires_at=GREATEST(COALESCE(plan_expires_at,NOW()),NOW())+($3||' days')::INTERVAL, updated_at=NOW() WHERE id=$4 AND COALESCE(balance,0) >= $5 RETURNING balance::float8"
+    ).bind(price).bind(&plan).bind(capped_days.to_string()).bind(merchant_id).bind(price).fetch_optional(&state.pool).await.unwrap_or(None);
+    let Some((new_balance,)) = updated else {
+        return Json(json!({"success": false, "message": "余额不足或扣款失败"}));
+    };
+    let detail = format!("购买套餐扣除 · {} · {}天 · ¥{:.2}", label, raw_days, price);
+    let _ = sqlx::query(
+        "INSERT INTO operation_logs (user_id, user_type, action, detail, created_at) VALUES ($1, 'merchant', 'update_plan', $2, NOW())"
+    ).bind(merchant_id).bind(&detail).execute(&state.pool).await;
+    Json(json!({"success": true, "message": format!("购买成功 {} {}天，已扣除 ¥{:.2}", label, raw_days, price), "data": {"plan": plan, "label": label, "days": raw_days, "price": price, "balance": new_balance}}))
+}
+
+#[derive(serde::Deserialize)]
+struct BalanceHistoryQuery { #[serde(default = "default_page")] page: i64, #[serde(default = "default_size")] page_size: i64 }
+fn default_page() -> i64 { 1 }
+fn default_size() -> i64 { 20 }
+
+fn extract_purchase_amount(detail: &str) -> Option<f64> {
+    if let Some(pos) = detail.rfind('¥') {
+        let raw: String = detail[pos + '¥'.len_utf8()..].chars()
+            .take_while(|c| c.is_ascii_digit() || *c == '.')
+            .collect();
+        if let Ok(v) = raw.parse::<f64>() { return Some(-v.abs()); }
+    }
+    None
+}
+
+async fn merchant_balance_history(State(state): State<AppState>, Extension(claims): Extension<Claims>, Query(q): Query<BalanceHistoryQuery>) -> Json<Value> {
+    let merchant_id = match Uuid::parse_str(&claims.sub) {
+        Ok(id) => id,
+        Err(_) => return Json(json!({"success": false, "message": "无效用户ID"})),
+    };
+    let page = q.page.max(1);
+    let size = q.page_size.clamp(1, 100);
+    let offset = (page - 1) * size;
+    let rows: Vec<(String, String, Option<String>, f64, Option<String>, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        r#"SELECT kind, title, code, amount, note, occurred_at FROM (
+             SELECT 'redeem'::text AS kind,
+                    CASE WHEN COALESCE(rc.recharge_type,'plan')='balance' THEN '余额充值' ELSE '套餐兑换' END AS title,
+                    rc.code AS code,
+                    CASE WHEN COALESCE(rc.recharge_type,'plan')='balance' THEN COALESCE(rc.balance_amount::float8,0) ELSE 0 END AS amount,
+                    COALESCE(pc.label, rc.plan, rc.note) AS note,
+                    rc.used_at AS occurred_at
+             FROM recharge_codes rc LEFT JOIN plan_configs pc ON pc.plan=rc.plan
+             WHERE rc.merchant_id=$1 AND rc.used_at IS NOT NULL
+             UNION ALL
+             SELECT br.record_type::text AS kind,
+                    CASE br.record_type
+                      WHEN 'system_balance_grant' THEN '系统赠送余额'
+                      WHEN 'system_plan_grant' THEN '系统赠送套餐'
+                      WHEN 'notice_reward' THEN '公告领取奖励'
+                      ELSE COALESCE(br.description,'余额变动')
+                    END AS title,
+                    NULL::text AS code,
+                    br.amount::float8 AS amount,
+                    br.description AS note,
+                    br.created_at AS occurred_at
+             FROM balance_records br WHERE br.merchant_id=$1
+             UNION ALL
+             SELECT 'purchase_plan'::text AS kind,
+                    '购买套餐'::text AS title,
+                    NULL::text AS code,
+                    COALESCE(NULLIF(regexp_replace(ol.detail, '^.*¥([0-9]+(\.[0-9]+)?).*$','\1'), ol.detail)::float8 * -1, 0) AS amount,
+                    ol.detail AS note,
+                    ol.created_at AS occurred_at
+             FROM operation_logs ol
+             WHERE ol.user_id=$1 AND ol.user_type='merchant' AND ol.action='update_plan' AND ol.detail LIKE '%购买套餐扣除%'
+           ) t ORDER BY occurred_at DESC LIMIT $2 OFFSET $3"#
+        )
+        .bind(merchant_id)
+        .bind(size as i64)
+        .bind(offset as i64)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default();
+    let items: Vec<Value> = rows.into_iter().map(|(kind,title,code,amount,note,occurred_at)| json!({
+        "kind": kind,
+        "title": title,
+        "code": code,
+        "amount": amount,
+        "note": note,
+        "occurred_at": occurred_at,
+    })).collect();
+    Json(json!({"success": true, "data": items, "items": items, "page": page, "page_size": size}))
 }

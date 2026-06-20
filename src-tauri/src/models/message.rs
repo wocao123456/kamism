@@ -9,6 +9,7 @@ use uuid::Uuid;
 pub enum MessageType {
     Notice,
     Message,
+    Email,
 }
 
 impl std::fmt::Display for MessageType {
@@ -16,6 +17,7 @@ impl std::fmt::Display for MessageType {
         match self {
             MessageType::Notice => write!(f, "notice"),
             MessageType::Message => write!(f, "message"),
+            MessageType::Email => write!(f, "email"),
         }
     }
 }
@@ -50,6 +52,7 @@ pub struct Message {
     pub target_type: String,
     pub target_id: Option<Uuid>,
     pub pinned: bool,
+    pub reward_amount: Option<f64>,
     pub expires_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -68,6 +71,7 @@ pub struct MessageAdminView {
     pub pinned: bool,
     pub expires_at: Option<DateTime<Utc>>,
     pub read_count: i64,
+    pub reward_amount: Option<f64>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -82,6 +86,8 @@ pub struct MessageMerchantView {
     pub pinned: bool,
     pub expires_at: Option<DateTime<Utc>>,
     pub is_read: bool,
+    pub reward_amount: Option<f64>,
+    pub reward_claimed: bool,
     pub created_at: DateTime<Utc>,
 }
 

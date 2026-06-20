@@ -10,6 +10,8 @@ use uuid::Uuid;
 #[derive(Deserialize)] pub struct AddBlacklistRequest { pub tp:String,pub value:String,pub reason:Option<String> }
 #[derive(Deserialize)] pub struct AddWhitelistRequest { pub tp:String,pub value:String,pub reason:Option<String> }
 #[derive(Deserialize)] pub struct SaveSettingsRequest { pub key:String,pub value:Value }
+#[derive(Deserialize)] pub struct GrantMerchantBalanceRequest { pub amount:f64, pub note:Option<String>, pub target_type:Option<String>, pub target_email:Option<String> }
+#[derive(Deserialize)] pub struct GrantMerchantPlanRequest { pub plan:String, pub expires_days:Option<i64>, pub target_type:Option<String>, pub target_email:Option<String> }
 #[derive(Deserialize)] pub struct OpLogQuery { pub page:Option<i64>,pub page_size:Option<i64> }
 
 pub fn admin_router_with_state(state:AppState)->Router<AppState>{
@@ -17,6 +19,10 @@ pub fn admin_router_with_state(state:AppState)->Router<AppState>{
         .route("/admin/merchants",get(list_merchants))
         .route("/admin/merchants/:id/status",patch(update_merchant_status))
         .route("/admin/merchants/:id/plan",patch(update_merchant_plan))
+        .route("/admin/merchants/grant-balance",post(grant_merchant_balance_scoped))
+        .route("/admin/merchants/grant-plan",post(grant_merchant_plan_scoped))
+        .route("/admin/merchants/:id/grant-balance",post(grant_merchant_balance))
+        .route("/admin/merchants/:id/grant-plan",post(grant_merchant_plan))
         .route("/admin/stats",get(get_stats))
         .route("/admin/blacklist",get(list_blacklist).post(add_blacklist))
         .route("/admin/blacklist/:id",delete(remove_blacklist))
@@ -72,13 +78,109 @@ async fn update_merchant_plan(State(state):State<AppState>,Path(id):Path<Uuid>,J
     match result{Ok(r)if r.rows_affected()>0=>{let msg=if plan!="free"{if let Err(e)=mq::publish_upgrade(&state.mq_channel,&id.to_string()).await{tracing::error!("mq upgrade fail {}:{}",id,e);}match expires_days{Some(d)if d>0=>format!("已升级为{}，有效期{}天",plan_label,d),_=>format!("已升级为{}（永久）",plan_label)}}else{"已降级为免费版".to_string()};Json(json!({"success":true,"message":msg}))},Ok(_)=>Json(json!({"success":false,"message":"商户不存在"})),Err(e)=>Json(json!({"success":false,"message":format!("更新失败:{}",e)}))}
 }
 
+
+
+async fn resolve_merchant_id_by_email(state:&AppState,email:&str)->Result<Uuid,String>{
+    let email_hash=EncryptedFieldsOps::generate_hash(email.trim());
+    let row:Option<(Uuid,)>=sqlx::query_as("SELECT id FROM merchants WHERE email_hash=$1 AND status='active'").bind(email_hash).fetch_optional(&state.pool).await.map_err(|e|format!("查询商户失败:{}",e))?;
+    row.map(|x|x.0).ok_or_else(||"未找到该邮箱对应的正常商户".to_string())
+}
+async fn grant_merchant_balance_scoped(State(state):State<AppState>,Json(body):Json<GrantMerchantBalanceRequest>)->Json<Value>{
+    let amount=body.amount;
+    if !amount.is_finite() || amount<=0.0 { return Json(json!({"success":false,"message":"请输入大于 0 的赠送金额"})); }
+    let note="系统赠送余额".to_string();
+    let target_type=body.target_type.as_deref().unwrap_or("single");
+    if target_type=="all"{
+        let mut tx=match state.pool.begin().await{Ok(t)=>t,Err(e)=>return Json(json!({"success":false,"message":format!("操作失败:{}",e)}))};
+        let updated=sqlx::query("UPDATE merchants SET balance=COALESCE(balance,0)+$1,updated_at=NOW() WHERE status='active'").bind(amount).execute(&mut *tx).await;
+        let count=match updated{Ok(r)=>r.rows_affected(),Err(e)=>{let _=tx.rollback().await;return Json(json!({"success":false,"message":format!("赠送失败:{}",e)}));}};
+        if let Err(e)=sqlx::query("INSERT INTO balance_records (merchant_id, amount, balance_after, record_type, description, created_at) SELECT id,$1,COALESCE(balance,0),'system_balance_grant',$2,NOW() FROM merchants WHERE status='active'").bind(amount).bind(&note).execute(&mut *tx).await{let _=tx.rollback().await;return Json(json!({"success":false,"message":format!("写入流水失败:{}",e)}));}
+        if let Err(e)=tx.commit().await{return Json(json!({"success":false,"message":format!("提交失败:{}",e)}));}
+        return Json(json!({"success":true,"message":format!("已给 {} 个商户赠送余额 ¥{:.2}",count,amount),"data":{"count":count}}));
+    }
+    let Some(email)=body.target_email.as_deref().filter(|x|!x.trim().is_empty()) else {return Json(json!({"success":false,"message":"指定赠送请输入商户邮箱"}));};
+    let id=match resolve_merchant_id_by_email(&state,email).await{Ok(id)=>id,Err(msg)=>return Json(json!({"success":false,"message":msg}))};
+    grant_merchant_balance(State(state),Path(id),Json(GrantMerchantBalanceRequest{amount,note:Some(note),target_type:None,target_email:None})).await
+}
+async fn grant_merchant_plan_scoped(State(state):State<AppState>,Json(body):Json<GrantMerchantPlanRequest>)->Json<Value>{
+    let plan=body.plan.trim().to_string();
+    if plan.is_empty(){return Json(json!({"success":false,"message":"请选择套餐"}));}
+    let plan_row:Option<(String,)>=sqlx::query_as("SELECT label FROM plan_configs WHERE plan=$1 AND is_active=true").bind(&plan).fetch_optional(&state.pool).await.unwrap_or(None);
+    let Some((label,))=plan_row else{return Json(json!({"success":false,"message":"套餐不存在或已停用"}));};
+    let target_type=body.target_type.as_deref().unwrap_or("single");
+    if target_type=="all"{
+        let result=match body.expires_days{Some(d) if d>0=>sqlx::query("UPDATE merchants SET plan=$1,plan_expires_at=GREATEST(COALESCE(plan_expires_at,NOW()),NOW())+($2||' days')::INTERVAL,updated_at=NOW() WHERE status='active'").bind(&plan).bind(d.to_string()).execute(&state.pool).await,_=>sqlx::query("UPDATE merchants SET plan=$1,plan_expires_at=NULL,updated_at=NOW() WHERE status='active'").bind(&plan).execute(&state.pool).await};
+        return match result{Ok(r)=>{ let desc=match body.expires_days{Some(d) if d>0=>format!("系统赠送套餐：{}，叠加{}天",label,d),_=>format!("系统赠送套餐：{}（永久）",label)}; let _=sqlx::query("INSERT INTO balance_records (merchant_id, amount, balance_after, record_type, description, created_at) SELECT id,0,COALESCE(balance,0),'system_plan_grant',$1,NOW() FROM merchants WHERE status='active'").bind(&desc).execute(&state.pool).await; Json(json!({"success":true,"message":match body.expires_days{Some(d) if d>0=>format!("已给 {} 个商户赠送{}，叠加{}天",r.rows_affected(),label,d),_=>format!("已给 {} 个商户赠送{}（永久）",r.rows_affected(),label)}}))},Err(e)=>Json(json!({"success":false,"message":format!("赠送失败:{}",e)}))};
+    }
+    let Some(email)=body.target_email.as_deref().filter(|x|!x.trim().is_empty()) else {return Json(json!({"success":false,"message":"指定赠送请输入商户邮箱"}));};
+    let id=match resolve_merchant_id_by_email(&state,email).await{Ok(id)=>id,Err(msg)=>return Json(json!({"success":false,"message":msg}))};
+    { let res=grant_merchant_plan(State(state.clone()),Path(id),Json(GrantMerchantPlanRequest{plan:plan.clone(),expires_days:body.expires_days,target_type:None,target_email:None})).await; let desc=match body.expires_days{Some(d) if d>0=>format!("系统赠送套餐：{}，叠加{}天",label,d),_=>format!("系统赠送套餐：{}（永久）",label)}; let _=sqlx::query("INSERT INTO balance_records (merchant_id, amount, balance_after, record_type, description, created_at) SELECT id,0,COALESCE(balance,0),'system_plan_grant',$2,NOW() FROM merchants WHERE id=$1").bind(id).bind(desc).execute(&state.pool).await; res }
+}
+
+async fn grant_merchant_balance(State(state):State<AppState>,Path(id):Path<Uuid>,Json(body):Json<GrantMerchantBalanceRequest>)->Json<Value>{
+    let amount=body.amount;
+    if !amount.is_finite() || amount<=0.0 { return Json(json!({"success":false,"message":"请输入大于 0 的赠送金额"})); }
+    let note="系统赠送余额".to_string();
+    let mut tx=match state.pool.begin().await{Ok(t)=>t,Err(e)=>return Json(json!({"success":false,"message":format!("操作失败:{}",e)}))};
+    let row=sqlx::query_as::<_,(f64,)>("UPDATE merchants SET balance=COALESCE(balance,0)+$1,updated_at=NOW() WHERE id=$2 RETURNING balance::float8").bind(amount).bind(id).fetch_optional(&mut *tx).await;
+    let new_balance=match row{Ok(Some((b,)))=>b,Ok(None)=>{let _=tx.rollback().await;return Json(json!({"success":false,"message":"商户不存在"}));},Err(e)=>{let _=tx.rollback().await;return Json(json!({"success":false,"message":format!("赠送失败:{}",e)}));}};
+    if let Err(e)=sqlx::query("INSERT INTO balance_records (merchant_id, amount, balance_after, record_type, description, created_at) VALUES ($1,$2,$3,'system_balance_grant',$4,NOW())")
+        .bind(id).bind(amount).bind(new_balance).bind(&note).execute(&mut *tx).await{let _=tx.rollback().await;return Json(json!({"success":false,"message":format!("写入流水失败:{}",e)}));}
+    if let Err(e)=tx.commit().await{return Json(json!({"success":false,"message":format!("提交失败:{}",e)}));}
+    Json(json!({"success":true,"message":format!("已赠送余额 ¥{:.2}",amount),"data":{"balance":new_balance}}))
+}
+async fn grant_merchant_plan(State(state):State<AppState>,Path(id):Path<Uuid>,Json(body):Json<GrantMerchantPlanRequest>)->Json<Value>{
+    let plan=body.plan.trim().to_string();
+    if plan.is_empty(){return Json(json!({"success":false,"message":"请选择套餐"}));}
+    let plan_row:Option<(String,)>=sqlx::query_as("SELECT label FROM plan_configs WHERE plan=$1 AND is_active=true").bind(&plan).fetch_optional(&state.pool).await.unwrap_or(None);
+    let Some((label,))=plan_row else{return Json(json!({"success":false,"message":"套餐不存在或已停用"}));};
+    let result=match body.expires_days{Some(d) if d>0=>sqlx::query("UPDATE merchants SET plan=$1,plan_expires_at=GREATEST(COALESCE(plan_expires_at,NOW()),NOW())+($2||' days')::INTERVAL,updated_at=NOW() WHERE id=$3").bind(&plan).bind(d.to_string()).bind(id).execute(&state.pool).await,_=>sqlx::query("UPDATE merchants SET plan=$1,plan_expires_at=NULL,updated_at=NOW() WHERE id=$2").bind(&plan).bind(id).execute(&state.pool).await};
+    match result{Ok(r) if r.rows_affected()>0=>{let _=mq::publish_upgrade(&state.mq_channel,&id.to_string()).await;Json(json!({"success":true,"message":match body.expires_days{Some(d) if d>0=>format!("已赠送{}，叠加{}天",label,d),_=>format!("已赠送{}（永久）",label)}}))},Ok(_)=>Json(json!({"success":false,"message":"商户不存在"})),Err(e)=>Json(json!({"success":false,"message":format!("赠送失败:{}",e)}))}
+}
+
 async fn get_stats(State(state):State<AppState>)->Json<Value>{
     let m:(i64,)=sqlx::query_as("SELECT COUNT(*) FROM merchants").fetch_one(&state.pool).await.unwrap_or((0,));
     let c:(i64,)=sqlx::query_as("SELECT COUNT(*) FROM cards").fetch_one(&state.pool).await.unwrap_or((0,));
     let a:(i64,)=sqlx::query_as("SELECT COUNT(*) FROM activations").fetch_one(&state.pool).await.unwrap_or((0,));
     let ac:(i64,)=sqlx::query_as("SELECT COUNT(*) FROM cards WHERE status='active'").fetch_one(&state.pool).await.unwrap_or((0,));
     let ap:(i64,)=sqlx::query_as("SELECT COUNT(*) FROM apps").fetch_one(&state.pool).await.unwrap_or((0,));
-    Json(json!({"success":true,"data":{"merchants":m.0,"total_cards":c.0,"active_cards":ac.0,"total_activations":a.0,"total_apps":ap.0}}))
+    let recent:(i64,)=sqlx::query_as("SELECT COUNT(*) FROM activations WHERE created_at >= NOW() - INTERVAL '30 days'").fetch_one(&state.pool).await.unwrap_or((0,));
+    // 近 7 天变化：优先用操作日志识别减少行为，删除后能显示红色负数；无删除时显示新增量。
+    let delta_merchants:(i64,)=sqlx::query_as(r#"SELECT
+        CASE WHEN SUM(CASE WHEN action IN ('delete','remove') THEN 1 ELSE 0 END) > 0
+          THEN -SUM(CASE WHEN action IN ('delete','remove') THEN 1 ELSE 0 END)
+          ELSE (SELECT COUNT(*) FROM merchants WHERE created_at >= NOW() - INTERVAL '7 days')
+        END FROM operation_logs WHERE created_at >= NOW() - INTERVAL '7 days' AND module='商户管理'"#).fetch_one(&state.pool).await.unwrap_or((0,));
+    let delta_activations:(i64,)=sqlx::query_as(r#"SELECT
+        CASE WHEN SUM(CASE WHEN action IN ('delete','remove') THEN 1 ELSE 0 END) > 0
+          THEN -SUM(CASE WHEN action IN ('delete','remove') THEN 1 ELSE 0 END)
+          ELSE (SELECT COUNT(*) FROM activations WHERE created_at >= NOW() - INTERVAL '7 days')
+        END FROM operation_logs WHERE created_at >= NOW() - INTERVAL '7 days' AND module IN ('激活管理','激活记录')"#).fetch_one(&state.pool).await.unwrap_or((0,));
+    let delta_cards:(i64,)=sqlx::query_as(r#"SELECT
+        CASE WHEN SUM(CASE WHEN action IN ('delete','remove') THEN 1 ELSE 0 END) > 0
+          THEN -SUM(CASE WHEN action IN ('delete','remove') THEN 1 ELSE 0 END)
+          ELSE (SELECT COUNT(*) FROM cards WHERE created_at >= NOW() - INTERVAL '7 days')
+        END FROM operation_logs WHERE created_at >= NOW() - INTERVAL '7 days' AND module='卡密管理'"#).fetch_one(&state.pool).await.unwrap_or((0,));
+    let delta_apps:(i64,)=sqlx::query_as(r#"SELECT
+        CASE WHEN SUM(CASE WHEN action IN ('delete','remove') THEN 1 ELSE 0 END) > 0
+          THEN -SUM(CASE WHEN action IN ('delete','remove') THEN 1 ELSE 0 END)
+          ELSE SUM(CASE WHEN action IN ('create','add') THEN 1 ELSE 0 END)
+        END FROM operation_logs WHERE created_at >= NOW() - INTERVAL '7 days' AND module='应用管理'"#).fetch_one(&state.pool).await.unwrap_or((0,));
+    let delta_merchants_safe = if delta_merchants.0 < 0 { delta_merchants.0.max(-m.0) } else { delta_merchants.0 };
+    let delta_activations_safe = if delta_activations.0 < 0 { delta_activations.0.max(-recent.0) } else { delta_activations.0 };
+    let delta_cards_safe = if delta_cards.0 < 0 { delta_cards.0.max(-c.0) } else { delta_cards.0 };
+    let delta_apps_safe = if delta_apps.0 < 0 { delta_apps.0.max(-ap.0) } else { delta_apps.0 };
+    let rows:Vec<(chrono::NaiveDate,i64,i64,i64,i64)>=sqlx::query_as(r#"
+        WITH days AS (SELECT generate_series(CURRENT_DATE - INTERVAL '29 days', CURRENT_DATE, INTERVAL '1 day')::date AS d)
+        SELECT d.d,
+          (SELECT COUNT(*) FROM merchants m2 WHERE m2.created_at::date <= d.d) AS merchants_total,
+          (SELECT COUNT(*) FROM activations a2 WHERE a2.created_at::date = d.d) AS activations_daily,
+          (SELECT COUNT(*) FROM cards c2 WHERE c2.created_at::date <= d.d) AS cards_total,
+          (SELECT COUNT(*) FROM apps ap2 WHERE ap2.created_at::date <= d.d) AS apps_total
+        FROM days d ORDER BY d.d
+    "#).fetch_all(&state.pool).await.unwrap_or_default();
+    let trend:Vec<Value>=rows.into_iter().map(|(d,mm,aa,cc,apps)|json!({"date":d.to_string(),"merchants":mm,"activations":aa,"cards":cc,"apps":apps})).collect();
+    Json(json!({"success":true,"data":{"merchants":m.0,"total_cards":c.0,"active_cards":ac.0,"total_activations":a.0,"recent_activations_30d":recent.0,"total_apps":ap.0,"deltas":{"merchants":delta_merchants_safe,"activations":delta_activations_safe,"cards":delta_cards_safe,"apps":delta_apps_safe},"trend":trend}}))
 }
 
 async fn list_blacklist(State(state):State<AppState>,Query(q):Query<BlacklistQuery>)->Json<Value>{

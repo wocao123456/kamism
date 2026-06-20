@@ -16,19 +16,18 @@ pub struct InstallRequest {
 }
 
 #[derive(Deserialize)]
-pub struct GenerateRechargeRequest { pub plan: String, pub billing_cycle: String, pub duration_days: i32, pub count: i32, pub prefix: Option<String>, pub note: Option<String> }
+pub struct GenerateRechargeRequest { pub plan: Option<String>, pub billing_cycle: Option<String>, pub duration_days: Option<i32>, pub count: i32, pub prefix: Option<String>, pub note: Option<String>, pub recharge_type: Option<String>, pub balance_amount: Option<f64> }
 #[derive(Deserialize)]
 pub struct RedeemRequest { pub code: String }
 #[derive(Deserialize)]
 pub struct BatchDeleteRechargeRequest { pub ids: Vec<Uuid> }
 
 pub fn install_public_router() -> Router<AppState> {
-    Router::new().route("/install/status", get(install_status)).route("/install/complete", post(install_complete))
+    Router::new().route("/install/status", get(install_status)).route("/install/complete", post(install_complete)).route("/system-config/public", get(public_config))
 }
 
 pub fn system_config_router(state: AppState) -> Router<AppState> {
     Router::new()
-        .route("/system-config/public", get(public_config))
         .route("/admin/system-config", get(list_config).post(save_config))
         .route("/admin/recharge-codes", get(list_recharge_codes).post(generate_recharge_codes))
         .route("/admin/recharge-codes/batch-delete", post(batch_delete_recharge_codes))
@@ -80,10 +79,14 @@ async fn public_config(State(state): State<AppState>) -> Json<Value> {
     let features = get_config(&state.pool, "merchant.enabled_features", default_merchant_features()).await;
     let merchant_page_enabled = get_config(&state.pool, "merchant.page_enabled", json!(true)).await.as_bool().unwrap_or(true);
     let register_enabled = get_config(&state.pool, "auth.register_enabled", json!(true)).await.as_bool().unwrap_or(true);
+    let recharge_amounts = get_config(&state.pool, "balance.recharge_amounts", json!([10,20,50,100,200,500,1000,2000,5000])).await;
+    let recharge_discounts = get_config(&state.pool, "balance.recharge_discounts", json!([])).await;
     Json(json!({"success": true, "data": {
         "merchant.enabled_features": features,
         "merchant.page_enabled": merchant_page_enabled,
-        "auth.register_enabled": register_enabled
+        "auth.register_enabled": register_enabled,
+        "balance.recharge_amounts": recharge_amounts,
+        "balance.recharge_discounts": recharge_discounts
     }}))
 }
 
@@ -96,43 +99,60 @@ async fn list_config(State(state): State<AppState>, Extension(claims): Extension
 
 async fn save_config(State(state): State<AppState>, Extension(claims): Extension<Claims>, Json(body): Json<SaveConfigRequest>) -> Response {
     if let Some(r) = admin_guard(&claims) { return r; }
-    let allowed = ["merchant.enabled_features", "merchant.page_enabled", "auth.register_enabled", "mail.smtp"];
+    let allowed = ["merchant.enabled_features", "merchant.page_enabled", "auth.register_enabled", "mail.smtp", "balance.recharge_amounts", "balance.recharge_discounts"];
     if !allowed.contains(&body.key.as_str()) { return Json(json!({"success": false, "message": "不允许修改该配置"})).into_response(); }
     let _ = sqlx::query("INSERT INTO system_config(key,value) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET value=$2,updated_at=NOW()").bind(&body.key).bind(&body.value).execute(&state.pool).await;
     Json(json!({"success": true, "message": "保存成功"})).into_response()
 }
 
 
-type RechargeRow = (Uuid, String, String, String, i32, String, Option<String>, Option<chrono::DateTime<chrono::Utc>>, chrono::DateTime<chrono::Utc>, Option<String>);
+type RechargeRow = (Uuid, String, String, String, i32, String, Option<String>, Option<chrono::DateTime<chrono::Utc>>, chrono::DateTime<chrono::Utc>, Option<String>, String, Option<f64>);
 
 async fn list_recharge_codes(State(state): State<AppState>, Extension(claims): Extension<Claims>, Query(params): Query<HashMap<String, String>>) -> Response {
     if let Some(r) = admin_guard(&claims) { return r; }
     let status = params.get("status").cloned().unwrap_or_default();
     let limit = params.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(80).clamp(1, 300);
     let stats: Vec<(String, i64)> = sqlx::query_as("SELECT status, COUNT(*) FROM recharge_codes GROUP BY status").fetch_all(&state.pool).await.unwrap_or_default();
+    let type_stats: Vec<(String, i64)> = sqlx::query_as("SELECT COALESCE(recharge_type,'plan'), COUNT(*) FROM recharge_codes GROUP BY COALESCE(recharge_type,'plan')").fetch_all(&state.pool).await.unwrap_or_default();
     let total: i64 = stats.iter().map(|(_, c)| *c).sum();
     let used = stats.iter().find(|(s,_)| s == "used").map(|(_,c)| *c).unwrap_or(0);
     let unused = stats.iter().find(|(s,_)| s == "unused").map(|(_,c)| *c).unwrap_or(0);
     let disabled = stats.iter().find(|(s,_)| s == "disabled").map(|(_,c)| *c).unwrap_or(0);
+    let balance_total = type_stats.iter().find(|(s,_)| s == "balance").map(|(_,c)| *c).unwrap_or(0);
+    let plan_total = type_stats.iter().find(|(s,_)| s == "plan").map(|(_,c)| *c).unwrap_or(0);
     let rows: Vec<RechargeRow> = if status.is_empty() {
-        sqlx::query_as("SELECT rc.id,rc.code,rc.plan,COALESCE(pc.label,rc.plan) AS label,rc.duration_days,rc.status,m.username,rc.used_at,rc.created_at,rc.note FROM recharge_codes rc LEFT JOIN merchants m ON m.id=rc.merchant_id LEFT JOIN plan_configs pc ON pc.plan=rc.plan ORDER BY rc.created_at DESC LIMIT $1").bind(limit).fetch_all(&state.pool).await.unwrap_or_default()
+        sqlx::query_as("SELECT rc.id,rc.code,rc.plan,CASE WHEN COALESCE(rc.recharge_type,'plan')='balance' THEN '余额兑换' ELSE COALESCE(pc.label,rc.plan) END AS label,rc.duration_days,rc.status,m.username,rc.used_at,rc.created_at,rc.note,COALESCE(rc.recharge_type,'plan') AS recharge_type,rc.balance_amount::float8 FROM recharge_codes rc LEFT JOIN merchants m ON m.id=rc.merchant_id LEFT JOIN plan_configs pc ON pc.plan=rc.plan ORDER BY rc.created_at DESC LIMIT $1").bind(limit).fetch_all(&state.pool).await.unwrap_or_default()
     } else {
-        sqlx::query_as("SELECT rc.id,rc.code,rc.plan,COALESCE(pc.label,rc.plan) AS label,rc.duration_days,rc.status,m.username,rc.used_at,rc.created_at,rc.note FROM recharge_codes rc LEFT JOIN merchants m ON m.id=rc.merchant_id LEFT JOIN plan_configs pc ON pc.plan=rc.plan WHERE rc.status=$1 ORDER BY rc.created_at DESC LIMIT $2").bind(&status).bind(limit).fetch_all(&state.pool).await.unwrap_or_default()
+        sqlx::query_as("SELECT rc.id,rc.code,rc.plan,CASE WHEN COALESCE(rc.recharge_type,'plan')='balance' THEN '余额兑换' ELSE COALESCE(pc.label,rc.plan) END AS label,rc.duration_days,rc.status,m.username,rc.used_at,rc.created_at,rc.note,COALESCE(rc.recharge_type,'plan') AS recharge_type,rc.balance_amount::float8 FROM recharge_codes rc LEFT JOIN merchants m ON m.id=rc.merchant_id LEFT JOIN plan_configs pc ON pc.plan=rc.plan WHERE rc.status=$1 ORDER BY rc.created_at DESC LIMIT $2").bind(&status).bind(limit).fetch_all(&state.pool).await.unwrap_or_default()
     };
-    let items: Vec<Value> = rows.into_iter().map(|r| json!({"id":r.0,"code":r.1,"plan":r.2,"label":r.3,"duration_days":r.4,"status":r.5,"merchant":r.6,"used_at":r.7,"created_at":r.8,"note":r.9})).collect();
-    Json(json!({"success": true, "data": {"stats": {"total": total, "used": used, "unused": unused, "disabled": disabled}, "items": items}})).into_response()
+    let items: Vec<Value> = rows.into_iter().map(|r| json!({"id":r.0,"code":r.1,"plan":r.2,"label":r.3,"duration_days":r.4,"status":r.5,"merchant":r.6,"used_at":r.7,"created_at":r.8,"note":r.9,"recharge_type":r.10,"balance_amount":r.11})).collect();
+    Json(json!({"success": true, "data": {"stats": {"total": total, "used": used, "unused": unused, "disabled": disabled, "plan_total": plan_total, "balance_total": balance_total}, "items": items}})).into_response()
 }
 
 async fn generate_recharge_codes(State(state): State<AppState>, Extension(claims): Extension<Claims>, Json(body): Json<GenerateRechargeRequest>) -> Response {
     if let Some(r) = admin_guard(&claims) { return r; }
     if body.count < 1 || body.count > 500 { return Json(json!({"success": false, "message": "生成数量需在 1-500"})).into_response(); }
-    if body.duration_days < 1 { return Json(json!({"success": false, "message": "有效天数必须大于 0"})).into_response(); }
-    let exists: Option<(String,)> = sqlx::query_as("SELECT plan FROM plan_configs WHERE plan=$1 AND is_active=true").bind(&body.plan).fetch_optional(&state.pool).await.unwrap_or(None);
-    if exists.is_none() { return Json(json!({"success": false, "message": "套餐不存在或已停用"})).into_response(); }
+    let recharge_type = body.recharge_type.clone().unwrap_or_else(|| "plan".to_string());
     let mut codes = Vec::new();
+    if recharge_type == "balance" {
+        let amount = body.balance_amount.unwrap_or(0.0);
+        if amount <= 0.0 { return Json(json!({"success": false, "message": "余额金额必须大于 0"})).into_response(); }
+        for _ in 0..body.count {
+            let code = format!("{}{}", body.prefix.clone().unwrap_or_else(|| "BAL".to_string()), Uuid::new_v4().simple().to_string()[..20].to_ascii_uppercase());
+            let _ = sqlx::query("INSERT INTO recharge_codes(code,plan,billing_cycle,duration_days,note,recharge_type,balance_amount) VALUES($1,'balance','custom',1,$2,'balance',$3)").bind(&code).bind(&body.note).bind(amount).execute(&state.pool).await;
+            codes.push(code);
+        }
+        return Json(json!({"success": true, "data": codes})).into_response();
+    }
+    let plan = body.plan.clone().unwrap_or_default();
+    let billing_cycle = body.billing_cycle.clone().unwrap_or_else(|| "month".to_string());
+    let duration_days = body.duration_days.unwrap_or(0);
+    if duration_days < 1 { return Json(json!({"success": false, "message": "有效天数必须大于 0"})).into_response(); }
+    let exists: Option<(String,)> = sqlx::query_as("SELECT plan FROM plan_configs WHERE plan=$1 AND is_active=true").bind(&plan).fetch_optional(&state.pool).await.unwrap_or(None);
+    if exists.is_none() { return Json(json!({"success": false, "message": "套餐不存在或已停用"})).into_response(); }
     for _ in 0..body.count {
         let code = format!("{}{}", body.prefix.clone().unwrap_or_else(|| "RC".to_string()), Uuid::new_v4().simple().to_string()[..20].to_ascii_uppercase());
-        let _ = sqlx::query("INSERT INTO recharge_codes(code,plan,billing_cycle,duration_days,note) VALUES($1,$2,$3,$4,$5)").bind(&code).bind(&body.plan).bind(&body.billing_cycle).bind(body.duration_days).bind(&body.note).execute(&state.pool).await;
+        let _ = sqlx::query("INSERT INTO recharge_codes(code,plan,billing_cycle,duration_days,note,recharge_type) VALUES($1,$2,$3,$4,$5,'plan')").bind(&code).bind(&plan).bind(&billing_cycle).bind(duration_days).bind(&body.note).execute(&state.pool).await;
         codes.push(code);
     }
     Json(json!({"success": true, "data": codes})).into_response()
@@ -161,9 +181,16 @@ async fn delete_recharge_code(State(state): State<AppState>, Extension(claims): 
 async fn redeem_code(State(state): State<AppState>, Extension(claims): Extension<Claims>, Json(body): Json<RedeemRequest>) -> Response {
     if claims.role != "merchant" && claims.role != "admin" { return (StatusCode::FORBIDDEN, Json(json!({"success": false, "message": "仅商户可兑换"}))).into_response(); }
     let merchant_id = match Uuid::parse_str(&claims.sub) { Ok(id) => id, Err(_) => return Json(json!({"success": false, "message": "无效用户"})).into_response() };
-    let row: Option<(Uuid, String, i32, String)> = sqlx::query_as("SELECT id,plan,duration_days,status FROM recharge_codes WHERE code=$1").bind(body.code.trim()).fetch_optional(&state.pool).await.unwrap_or(None);
-    let Some((id, plan, days, status)) = row else { return Json(json!({"success": false, "message": "兑换卡密不存在"})).into_response(); };
+    let row: Option<(Uuid, String, i32, String, String, Option<f64>)> = sqlx::query_as("SELECT id,plan,duration_days,status,COALESCE(recharge_type,'plan'),balance_amount::float8 FROM recharge_codes WHERE code=$1").bind(body.code.trim()).fetch_optional(&state.pool).await.unwrap_or(None);
+    let Some((id, plan, days, status, recharge_type, balance_amount)) = row else { return Json(json!({"success": false, "message": "兑换卡密不存在"})).into_response(); };
     if status != "unused" { return Json(json!({"success": false, "message": "兑换卡密已使用或不可用"})).into_response(); }
+    if recharge_type == "balance" {
+        let amount = balance_amount.unwrap_or(0.0);
+        let updated = sqlx::query("UPDATE merchants SET balance=COALESCE(balance,0)+$1, updated_at=NOW() WHERE id=$2").bind(amount).bind(merchant_id).execute(&state.pool).await;
+        if updated.is_err() { return Json(json!({"success": false, "message": "余额字段未初始化，请联系管理员"})).into_response(); }
+        let _ = sqlx::query("UPDATE recharge_codes SET status='used',merchant_id=$1,used_at=NOW() WHERE id=$2").bind(merchant_id).bind(id).execute(&state.pool).await;
+        return Json(json!({"success": true, "message": format!("兑换成功，余额增加 ¥{:.2}", amount)})).into_response();
+    }
     let current: Option<(String, Option<chrono::DateTime<chrono::Utc>>)> = sqlx::query_as("SELECT plan, plan_expires_at FROM merchants WHERE id=$1").bind(merchant_id).fetch_optional(&state.pool).await.unwrap_or(None);
     let Some((current_plan, current_exp)) = current else { return Json(json!({"success": false, "message": "商户账号不存在"})).into_response(); };
     let active_paid = current_plan != "free" && current_exp.map(|d| d > chrono::Utc::now()).unwrap_or(false);

@@ -16,7 +16,7 @@
 use crate::{
     middleware::auth::{admin_only, auth_middleware, AppState},
     models::message::{Message as Msg, MessageAdminView, MessageMerchantView},
-    utils::{jwt::Claims, ws::WsRegistry},
+    utils::{jwt::Claims, ws::WsRegistry, mailer::{load_mailer_config, send_custom_email}},
 };
 use axum::{
     extract::{
@@ -50,7 +50,9 @@ pub fn messages_merchant_router(state: AppState) -> Router<AppState> {
         .route("/merchant/notices", get(merchant_list_notices))
         .route("/merchant/messages", get(merchant_list_messages))
         .route("/merchant/messages/unread_count", get(merchant_unread_count))
+        .route("/merchant/messages/read_all", post(merchant_mark_all_read))
         .route("/merchant/messages/:id/read", post(merchant_mark_read))
+        .route("/merchant/messages/:id/claim_reward", post(merchant_claim_reward))
         .route_layer(middleware::from_fn_with_state(state, auth_middleware))
 }
 
@@ -62,7 +64,7 @@ pub fn messages_ws_router() -> Router<AppState> {
 
 #[derive(Deserialize)]
 pub struct SendMessageRequest {
-    /// 消息类型："notice" | "message"
+    /// 消息类型："notice" | "message" | "email"
     pub msg_type: String,
     pub title: String,
     pub content: String,
@@ -73,6 +75,8 @@ pub struct SendMessageRequest {
     /// 单发时指定商户邮箱（优先于 target_id）
     pub target_email: Option<String>,
     pub pinned: Option<bool>,
+    /// 公告余额奖励金额（仅 notice 生效，>0 时商户可领取一次）
+    pub reward_amount: Option<f64>,
     pub expires_at: Option<String>,
 }
 
@@ -81,6 +85,8 @@ pub struct UpdateMessageRequest {
     pub title: Option<String>,
     pub content: Option<String>,
     pub pinned: Option<bool>,
+    /// 公告余额奖励金额（仅 notice 生效，>0 时商户可领取一次）
+    pub reward_amount: Option<f64>,
     pub expires_at: Option<String>,
 }
 
@@ -101,8 +107,8 @@ async fn admin_send_message(
 ) -> Json<Value> {
     // 参数校验
     let msg_type = match body.msg_type.as_str() {
-        "notice" | "message" => body.msg_type.clone(),
-        _ => return Json(json!({"success": false, "message": "无效消息类型，仅支持 notice / message"})),
+        "notice" | "message" | "email" => body.msg_type.clone(),
+        _ => return Json(json!({"success": false, "message": "无效消息类型，仅支持 notice / message / email"})),
     };
     if body.title.trim().is_empty() {
         return Json(json!({"success": false, "message": "标题不能为空"}));
@@ -148,14 +154,46 @@ async fn admin_send_message(
     };
 
     let pinned = body.pinned.unwrap_or(false);
+    let reward_amount = if msg_type == "notice" { body.reward_amount.unwrap_or(0.0).max(0.0) } else { 0.0 };
     let expires_at: Option<chrono::DateTime<chrono::Utc>> = body
         .expires_at
         .as_deref()
         .and_then(|s| s.parse().ok());
+    if msg_type == "email" {
+        match load_mailer_config(&state.pool).await {
+            Ok(cfg) => {
+                let mut sent = 0u64;
+                if target_type == "all" {
+                    let rows: Vec<(String,)> = sqlx::query_as("SELECT email_encrypted FROM merchants WHERE status='active'").fetch_all(&state.pool).await.unwrap_or_default();
+                    for (enc_email,) in rows {
+                        if let Ok(email) = crate::db::encrypted_fields::EncryptedFieldsOps::decrypt_merchant_email(&state.encryptor, &enc_email) {
+                            if send_custom_email(&cfg, &email, &body.title, &body.content).await.is_ok() { sent += 1; }
+                        }
+                    }
+                } else if let Some(ref email) = body.target_email {
+                    send_custom_email(&cfg, email, &body.title, &body.content).await.map_err(|e| tracing::warn!("邮件发送失败 {}: {}", email, e)).ok();
+                    sent = 1;
+                }
+                let _ = sqlx::query(
+                    "INSERT INTO messages (type, title, content, sender_id, target_type, target_id, pinned, reward_amount, expires_at)
+                     VALUES ('email', $1, $2, $3, $4, $5, false, 0, NULL)"
+                )
+                .bind(&body.title)
+                .bind(&body.content)
+                .bind(sender_id)
+                .bind(&target_type)
+                .bind(resolved_target_id)
+                .execute(&state.pool)
+                .await;
+                return Json(json!({"success": true, "message": format!("邮件已发送 {} 封", sent), "data": {"sent": sent}}));
+            }
+            Err(e) => return Json(json!({"success": false, "message": e.to_string()})),
+        }
+    }
 
     let row: Result<(Uuid,), _> = sqlx::query_as(
-        "INSERT INTO messages (type, title, content, sender_id, target_type, target_id, pinned, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        "INSERT INTO messages (type, title, content, sender_id, target_type, target_id, pinned, reward_amount, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING id",
     )
     .bind(&msg_type)
@@ -165,6 +203,7 @@ async fn admin_send_message(
     .bind(&target_type)
     .bind(resolved_target_id)
     .bind(pinned)
+    .bind(reward_amount)
     .bind(expires_at)
     .fetch_one(&state.pool)
     .await;
@@ -222,7 +261,7 @@ async fn admin_list_messages(
         .unwrap_or((0,));
 
         let rows = sqlx::query_as::<_, Msg>(
-            "SELECT * FROM messages WHERE type = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3",
+            "SELECT * FROM messages WHERE type = $1 ORDER BY pinned DESC, created_at DESC LIMIT $2 OFFSET $3",
         )
         .bind(t)
         .bind(page_size)
@@ -232,12 +271,12 @@ async fn admin_list_messages(
         .unwrap_or_default();
         (total, rows)
     } else {
-        let total = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM messages")
+        let total = sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM messages WHERE type IN ('notice', 'message')")
             .fetch_one(&state.pool)
             .await
             .unwrap_or((0,));
         let rows = sqlx::query_as::<_, Msg>(
-            "SELECT * FROM messages ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+            "SELECT * FROM messages WHERE type IN ('notice', 'message') ORDER BY pinned DESC, created_at DESC LIMIT $1 OFFSET $2",
         )
         .bind(page_size)
         .bind(offset)
@@ -267,6 +306,7 @@ async fn admin_list_messages(
                 target_type: m.target_type,
                 target_id: m.target_id,
                 pinned: m.pinned,
+                reward_amount: m.reward_amount,
                 expires_at: m.expires_at,
                 read_count: read_count.0,
                 created_at: m.created_at,
@@ -306,7 +346,6 @@ async fn admin_update_message(
         .expires_at
         .as_deref()
         .and_then(|s| s.parse().ok());
-
     let result = sqlx::query(
         "UPDATE messages SET
             title      = COALESCE($1, title),
@@ -352,8 +391,14 @@ async fn admin_delete_message(
 
 async fn merchant_list_notices(
     State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
     Query(q): Query<MessageListQuery>,
 ) -> Json<Value> {
+    let merchant_id = match Uuid::parse_str(&claims.sub) {
+        Ok(id) => id,
+        Err(_) => return Json(json!({"success": false, "message": "无效用户 ID"})),
+    };
+
     let page = q.page.unwrap_or(1).max(1);
     let page_size = q.page_size.unwrap_or(20).min(100);
     let offset = (page - 1) * page_size;
@@ -380,18 +425,41 @@ async fn merchant_list_notices(
     .await
     .unwrap_or_default();
 
+    // 批量查询已读状态
+    let message_ids: Vec<Uuid> = rows.iter().map(|m| m.id).collect();
+    let read_ids: Vec<(Uuid, Option<chrono::DateTime<chrono::Utc>>)> = if message_ids.is_empty() {
+        vec![]
+    } else {
+        sqlx::query_as(
+            "SELECT message_id, reward_claimed_at FROM message_reads
+             WHERE merchant_id = $1 AND message_id = ANY($2)",
+        )
+        .bind(merchant_id)
+        .bind(&message_ids)
+        .fetch_all(&state.pool)
+        .await
+        .unwrap_or_default()
+    };
+    let read_set: std::collections::HashSet<Uuid> = read_ids.iter().map(|(id, _)| *id).collect();
+    let reward_claimed_set: std::collections::HashSet<Uuid> = read_ids.into_iter().filter_map(|(id, claimed_at)| claimed_at.map(|_| id)).collect();
+
     let views: Vec<MessageMerchantView> = rows
         .into_iter()
-        .map(|m| MessageMerchantView {
-            id: m.id,
-            msg_type: m.msg_type,
-            title: m.title,
-            content: m.content,
-            target_type: m.target_type,
-            pinned: m.pinned,
-            expires_at: m.expires_at,
-            is_read: false, // 公告不追踪已读
-            created_at: m.created_at,
+        .map(|m| {
+            let is_read = read_set.contains(&m.id);
+            MessageMerchantView {
+                id: m.id,
+                msg_type: m.msg_type,
+                title: m.title,
+                content: m.content,
+                target_type: m.target_type,
+                pinned: m.pinned,
+                reward_amount: m.reward_amount,
+                expires_at: m.expires_at,
+                is_read,
+                reward_claimed: reward_claimed_set.contains(&m.id),
+                created_at: m.created_at,
+            }
         })
         .collect();
 
@@ -447,11 +515,11 @@ async fn merchant_list_messages(
 
     // 批量查询已读状态
     let message_ids: Vec<Uuid> = rows.iter().map(|m| m.id).collect();
-    let read_ids: Vec<(Uuid,)> = if message_ids.is_empty() {
+    let read_ids: Vec<(Uuid, Option<chrono::DateTime<chrono::Utc>>)> = if message_ids.is_empty() {
         vec![]
     } else {
         sqlx::query_as(
-            "SELECT message_id FROM message_reads
+            "SELECT message_id, reward_claimed_at FROM message_reads
              WHERE merchant_id = $1 AND message_id = ANY($2)",
         )
         .bind(merchant_id)
@@ -460,7 +528,8 @@ async fn merchant_list_messages(
         .await
         .unwrap_or_default()
     };
-    let read_set: std::collections::HashSet<Uuid> = read_ids.into_iter().map(|(id,)| id).collect();
+    let read_set: std::collections::HashSet<Uuid> = read_ids.iter().map(|(id, _)| *id).collect();
+    let reward_claimed_set: std::collections::HashSet<Uuid> = read_ids.into_iter().filter_map(|(id, claimed_at)| claimed_at.map(|_| id)).collect();
 
     let views: Vec<MessageMerchantView> = rows
         .into_iter()
@@ -473,8 +542,10 @@ async fn merchant_list_messages(
                 content: m.content,
                 target_type: m.target_type,
                 pinned: m.pinned,
+                reward_amount: m.reward_amount,
                 expires_at: m.expires_at,
                 is_read,
+                reward_claimed: reward_claimed_set.contains(&m.id),
                 created_at: m.created_at,
             }
         })
@@ -502,8 +573,11 @@ async fn merchant_unread_count(
 
     let count: (i64,) = sqlx::query_as(
         "SELECT COUNT(*) FROM messages
-         WHERE type = 'message'
-           AND (target_type = 'all' OR (target_type = 'single' AND target_id = $1))
+         WHERE (
+             (type = 'notice' AND (expires_at IS NULL OR expires_at > NOW()))
+             OR
+             (type = 'message' AND (target_type = 'all' OR (target_type = 'single' AND target_id = $1)))
+         )
            AND id NOT IN (
                SELECT message_id FROM message_reads WHERE merchant_id = $1
            )",
@@ -514,6 +588,36 @@ async fn merchant_unread_count(
     .unwrap_or((0,));
 
     Json(json!({"success": true, "data": {"unread": count.0}}))
+}
+
+
+async fn merchant_mark_all_read(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+) -> Json<Value> {
+    let merchant_id = match Uuid::parse_str(&claims.sub) {
+        Ok(id) => id,
+        Err(_) => return Json(json!({"success": false, "message": "无效用户 ID"})),
+    };
+
+    let result = sqlx::query(
+        "INSERT INTO message_reads (message_id, merchant_id)
+         SELECT id, $1 FROM messages
+         WHERE (
+             (type = 'notice' AND (expires_at IS NULL OR expires_at > NOW()))
+             OR
+             (type = 'message' AND (target_type = 'all' OR (target_type = 'single' AND target_id = $1)))
+         )
+         ON CONFLICT (message_id, merchant_id) DO NOTHING",
+    )
+    .bind(merchant_id)
+    .execute(&state.pool)
+    .await;
+
+    match result {
+        Ok(done) => Json(json!({"success": true, "message": "已全部阅读", "data": {"marked": done.rows_affected()}})),
+        Err(e) => Json(json!({"success": false, "message": format!("操作失败: {}", e)})),
+    }
 }
 
 // ── 商户：标记已读 ────────────────────────────────────────────────────────────
@@ -545,6 +649,78 @@ async fn merchant_mark_read(
     }
 }
 
+
+// ── 商户：领取公告余额奖励 ────────────────────────────────────────────────────
+async fn merchant_claim_reward(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(id): Path<Uuid>,
+) -> Json<Value> {
+    let merchant_id = match Uuid::parse_str(&claims.sub) {
+        Ok(id) => id,
+        Err(_) => return Json(json!({"success": false, "message": "无效用户 ID"})),
+    };
+    let reward: Option<(f64,)> = sqlx::query_as(
+        "SELECT COALESCE(reward_amount,0)::float8 FROM messages WHERE id=$1 AND type='notice' AND (expires_at IS NULL OR expires_at > NOW())"
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .unwrap_or(None);
+    let amount = match reward {
+        Some((v,)) if v > 0.0 => v,
+        Some(_) => return Json(json!({"success": false, "message": "该公告没有可领取奖励"})),
+        None => return Json(json!({"success": false, "message": "公告不存在或已过期"})),
+    };
+
+    let mut tx = match state.pool.begin().await {
+        Ok(tx) => tx,
+        Err(e) => return Json(json!({"success": false, "message": format!("领取失败: {}", e)})),
+    };
+
+    let inserted = sqlx::query(
+        "INSERT INTO message_reads (message_id, merchant_id, reward_claimed_at)
+         VALUES ($1, $2, NOW())
+         ON CONFLICT (message_id, merchant_id) DO UPDATE
+         SET reward_claimed_at = CASE WHEN message_reads.reward_claimed_at IS NULL THEN NOW() ELSE message_reads.reward_claimed_at END
+         WHERE message_reads.reward_claimed_at IS NULL"
+    )
+    .bind(id)
+    .bind(merchant_id)
+    .execute(&mut *tx)
+    .await;
+
+    let rows = match inserted {
+        Ok(r) => r.rows_affected(),
+        Err(e) => { let _ = tx.rollback().await; return Json(json!({"success": false, "message": format!("领取失败: {}", e)})); }
+    };
+    if rows == 0 {
+        let _ = tx.rollback().await;
+        return Json(json!({"success": false, "message": "奖励已领取过"}));
+    }
+
+    let balance = sqlx::query_as::<_, (f64,)>(
+        "UPDATE merchants SET balance = COALESCE(balance,0) + $1, updated_at = NOW() WHERE id=$2 RETURNING balance::float8"
+    )
+    .bind(amount)
+    .bind(merchant_id)
+    .fetch_one(&mut *tx)
+    .await;
+    let new_balance = match balance {
+        Ok((b,)) => b,
+        Err(e) => { let _ = tx.rollback().await; return Json(json!({"success": false, "message": format!("领取失败: {}", e)})); }
+    };
+    let _ = sqlx::query("INSERT INTO balance_records (merchant_id, amount, balance_after, record_type, description, created_at) VALUES ($1,$2,$3,'notice_reward','公告领取奖励',NOW())")
+        .bind(merchant_id)
+        .bind(amount)
+        .bind(new_balance)
+        .execute(&mut *tx)
+        .await;
+    if let Err(e) = tx.commit().await {
+        return Json(json!({"success": false, "message": format!("领取失败: {}", e)}));
+    }
+    Json(json!({"success": true, "message": format!("已领取 {:.2} 元余额", amount), "data": {"amount": amount, "balance": new_balance}}))
+}
 // ── WebSocket 升级端点 ────────────────────────────────────────────────────────
 //
 // 连接方式：ws://host /ws/messages?token=<JWT>
@@ -640,4 +816,3 @@ async fn handle_ws(socket: WebSocket, merchant_id: Uuid, registry: WsRegistry) {
 
     registry_for_cleanup.cleanup_dead_pub(merchant_id).await;
 }
-

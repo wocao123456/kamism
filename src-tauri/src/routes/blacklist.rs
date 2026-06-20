@@ -7,6 +7,9 @@
 //!   GET    /blacklist/devices        — 设备黑名单列表
 //!   POST   /blacklist/devices        — 添加设备
 //!   DELETE /blacklist/devices/:id    — 删除设备
+//!   GET    /blacklist/cards          — 卡密黑名单列表
+//!   POST   /blacklist/cards          — 添加卡密
+//!   DELETE /blacklist/cards/:id      — 删除卡密
 //!   GET    /blacklist/alerts         — 异常告警列表
 //!   POST   /blacklist/alerts/:id/read — 标记告警已读
 
@@ -40,6 +43,11 @@ pub struct AddDeviceRequest {
     pub device_id: String,
     pub reason: Option<String>,
 }
+#[derive(Deserialize)]
+pub struct AddCardRequest {
+    pub card_key: String,
+    pub reason: Option<String>,
+}
 
 #[derive(Deserialize)]
 pub struct PageQuery {
@@ -59,6 +67,13 @@ pub struct IpBlacklistEntry {
 pub struct DeviceBlacklistEntry {
     pub id: Uuid,
     pub device_hint: Option<String>,
+    pub reason: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+#[derive(Serialize, sqlx::FromRow)]
+pub struct CardBlacklistEntry {
+    pub id: Uuid,
+    pub card_key: String,
     pub reason: Option<String>,
     pub created_at: DateTime<Utc>,
 }
@@ -82,6 +97,7 @@ pub fn blacklist_router(state: AppState) -> Router<AppState> {
     let read_routes = Router::new()
         .route("/blacklist/ips", get(list_ip))
         .route("/blacklist/devices", get(list_device))
+        .route("/blacklist/cards", get(list_card))
         .route("/blacklist/alerts", get(list_alerts))
         .route("/blacklist/alerts/unread_count", get(alerts_unread_count))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
@@ -92,6 +108,8 @@ pub fn blacklist_router(state: AppState) -> Router<AppState> {
         .route("/blacklist/ips/:id", delete(remove_ip))
         .route("/blacklist/devices", post(add_device))
         .route("/blacklist/devices/:id", delete(remove_device))
+        .route("/blacklist/cards", post(add_card))
+        .route("/blacklist/cards/:id", delete(remove_card))
         .route("/blacklist/alerts/:id/read", post(mark_alert_read))
         .route_layer(middleware::from_fn_with_state(state.clone(), auth_middleware));
 
@@ -278,6 +296,81 @@ async fn remove_device(
     .execute(&state.pool)
     .await;
 
+    match result {
+        Ok(r) if r.rows_affected() > 0 => Json(json!({"success": true, "message": "已移除"})),
+        Ok(_) => Json(json!({"success": false, "message": "记录不存在或无权限"})),
+        Err(e) => Json(json!({"success": false, "message": format!("删除失败: {}", e)})),
+    }
+}
+
+
+// ── 卡密黑名单 ────────────────────────────────────────────────────────────────
+async fn list_card(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Query(q): Query<PageQuery>,
+) -> Json<Value> {
+    let merchant_id = Uuid::parse_str(&claims.sub).unwrap_or_default();
+    let page = q.page.unwrap_or(1).max(1);
+    let page_size = q.page_size.unwrap_or(20).min(100);
+    let offset = (page - 1) * page_size;
+    let rows: Vec<CardBlacklistEntry> = sqlx::query_as(
+        "SELECT id, card_key, reason, created_at FROM card_blacklist
+         WHERE merchant_id = $1
+         ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+    )
+    .bind(merchant_id)
+    .bind(page_size)
+    .bind(offset)
+    .fetch_all(&state.pool)
+    .await
+    .unwrap_or_default();
+    let total: (i64,) = sqlx::query_as(
+        "SELECT COUNT(*) FROM card_blacklist WHERE merchant_id = $1"
+    )
+    .bind(merchant_id)
+    .fetch_one(&state.pool)
+    .await
+    .unwrap_or((0,));
+    Json(json!({"success": true, "data": rows, "total": total.0, "page": page, "page_size": page_size}))
+}
+
+async fn add_card(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Json(body): Json<AddCardRequest>,
+) -> Json<Value> {
+    let card_key = body.card_key.trim().to_string();
+    if card_key.is_empty() {
+        return Json(json!({"success": false, "message": "卡密不能为空"}));
+    }
+    let merchant_id = Uuid::parse_str(&claims.sub).unwrap_or_default();
+    let result = sqlx::query(
+        "INSERT INTO card_blacklist (merchant_id, card_key, reason) VALUES ($1, $2, $3)
+         ON CONFLICT (COALESCE(merchant_id::text, 'global'::text), card_key) DO UPDATE SET reason = $3"
+    )
+    .bind(merchant_id)
+    .bind(&card_key)
+    .bind(&body.reason)
+    .execute(&state.pool)
+    .await;
+    match result {
+        Ok(_) => Json(json!({"success": true, "message": "已添加到卡密黑名单"})),
+        Err(e) => Json(json!({"success": false, "message": format!("添加失败: {}", e)})),
+    }
+}
+
+async fn remove_card(
+    State(state): State<AppState>,
+    Extension(claims): Extension<Claims>,
+    Path(id): Path<Uuid>,
+) -> Json<Value> {
+    let merchant_id = Uuid::parse_str(&claims.sub).unwrap_or_default();
+    let result = sqlx::query("DELETE FROM card_blacklist WHERE id = $1 AND merchant_id = $2")
+        .bind(id)
+        .bind(merchant_id)
+        .execute(&state.pool)
+        .await;
     match result {
         Ok(r) if r.rows_affected() > 0 => Json(json!({"success": true, "message": "已移除"})),
         Ok(_) => Json(json!({"success": false, "message": "记录不存在或无权限"})),

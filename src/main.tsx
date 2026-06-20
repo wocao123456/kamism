@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import App from './App';
 import './index.css';
+import './App.css';
 import { initApiUrl } from './lib/api';
 
 // 初始化 API 地址后再渲染，确保所有请求指向正确的服务器

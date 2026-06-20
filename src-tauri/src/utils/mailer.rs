@@ -37,100 +37,82 @@ fn get_icon_base64() -> String {
     general_purpose::STANDARD.encode(bytes)
 }
 
-fn build_verify_email(code: &str) -> String {
+fn esc_html(input: &str) -> String {
+    input
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('\"', "&quot;")
+}
+fn build_code_email(code: &str, scene: &str) -> String {
     let icon_b64 = get_icon_base64();
     let icon_src = format!("data:image/png;base64,{}", icon_b64);
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>KamiSM 邮箱验证</title>
-</head>
-<body style="margin:0;padding:0;background:#06060a;font-family:'Helvetica Neue',Arial,sans-serif;">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#06060a;padding:40px 0;">
-    <tr><td align="center">
-      <table width="520" cellpadding="0" cellspacing="0" style="max-width:520px;width:100%;">
-
-        <!-- Header -->
-        <tr><td style="padding:0 0 28px 0;text-align:center;">
-          <table cellpadding="0" cellspacing="0" style="margin:0 auto;">
-            <tr>
-              <td style="background:linear-gradient(135deg,#7c6af7,#a78bfa);border-radius:12px;width:44px;height:44px;text-align:center;vertical-align:middle;">
-                <img src="{icon_src}" alt="KamiSM" width="28" height="28" style="display:block;margin:8px auto;border-radius:6px;" />
-              </td>
-              <td style="padding-left:10px;vertical-align:middle;">
-                <span style="font-size:22px;font-weight:800;color:#e8e8f0;letter-spacing:-0.5px;">KamiSM</span>
-              </td>
-            </tr>
-          </table>
-        </td></tr>
-
-        <!-- Card -->
-        <tr><td style="background:#111118;border:1px solid #1e1e2e;border-radius:16px;padding:40px 36px;">
-
-          <!-- Title -->
-          <table width="100%" cellpadding="0" cellspacing="0">
-            <tr><td style="padding-bottom:8px;">
-              <h1 style="margin:0;font-size:20px;font-weight:800;color:#e8e8f0;letter-spacing:-0.3px;">验证你的邮箱</h1>
-            </td></tr>
-            <tr><td style="padding-bottom:32px;">
-              <p style="margin:0;font-size:14px;color:#888899;line-height:1.6;">
-                你正在注册 <strong style="color:#7c6af7;">KamiSM</strong> 商户账号，请使用以下验证码完成验证。<br />
-                如果这不是你的操作，请忽略本邮件。
-              </p>
-            </td></tr>
-          </table>
-
-          <!-- Code block -->
-          <table width="100%" cellpadding="0" cellspacing="0">
-            <tr><td>
-              <div style="background:#0a0a0f;border:1px solid #2a2a3e;border-radius:12px;padding:28px;text-align:center;margin-bottom:28px;position:relative;">
-                <p style="margin:0 0 8px 0;font-size:11px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;color:#55556a;">验证码</p>
-                <p style="margin:0;font-size:42px;font-weight:800;letter-spacing:16px;color:#7c6af7;font-family:'Courier New',Courier,monospace;text-indent:16px;">{code}</p>
-              </div>
-            </td></tr>
-          </table>
-
-          <!-- Info -->
-          <table width="100%" cellpadding="0" cellspacing="0">
-            <tr><td style="background:#16161f;border-radius:8px;padding:16px 20px;">
-              <table width="100%" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td style="font-size:13px;color:#888899;">⏱ 有效时间</td>
-                  <td style="font-size:13px;color:#e8e8f0;text-align:right;font-weight:600;">10 分钟</td>
-                </tr>
-                <tr><td colspan="2" style="padding:6px 0;"><hr style="border:none;border-top:1px solid #1e1e2e;margin:0;" /></td></tr>
-                <tr>
-                  <td style="font-size:13px;color:#888899;">🔒 安全提示</td>
-                  <td style="font-size:13px;color:#e8e8f0;text-align:right;font-weight:600;">请勿泄露给他人</td>
-                </tr>
-              </table>
-            </td></tr>
-          </table>
-
-        </td></tr>
-
-        <!-- Footer -->
-        <tr><td style="padding:24px 0 0 0;text-align:center;">
-          <p style="margin:0;font-size:12px;color:#55556a;line-height:1.7;">
-            此邮件由 KamiSM 自动发送，请勿直接回复。<br />
-            &copy; 2026 KamiSM. All rights reserved.
-          </p>
-        </td></tr>
-
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>"#,
-        code = code,
-        icon_src = icon_src
-    )
+    let (title, hello, subtitle, accent, badge, footer_note) = match scene {
+        "reset" => ("找回密码验证码", "正在进行密码重置", "请使用下方验证码完成身份校验。若非本人操作，请立即忽略本邮件并检查账号安全。", "#f97316", "PASSWORD RESET", "此验证码仅用于找回密码。"),
+        "change_email" => ("换绑邮箱验证码", "正在绑定新的邮箱", "请使用下方验证码确认新邮箱归属。完成后账号通知和安全验证将发送到该邮箱。", "#0ea5e9", "EMAIL CHANGE", "此验证码仅用于换绑邮箱。"),
+        _ => ("注册邮箱验证码", "欢迎创建 KamiSM 账号", "请使用下方验证码完成邮箱验证，验证通过后即可进入商户工作台。", "#4f46e5", "SIGN UP", "此验证码仅用于注册账号。"),
+    };
+    format!(r#"<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>{title}</title></head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','Microsoft YaHei',Arial,sans-serif;color:#111827;">
+  <div style="padding:34px 12px;background:#f1f5f9;">
+    <div style="max-width:560px;margin:0 auto;background:#ffffff;border-radius:22px;overflow:hidden;border:1px solid #e5e7eb;box-shadow:0 18px 55px rgba(15,23,42,.13);">
+      <div style="padding:24px 30px;background:linear-gradient(135deg,{accent},#7c3aed);color:#fff;">
+        <img src="{icon_src}" width="38" height="38" style="border-radius:12px;vertical-align:middle;margin-right:10px;background:#fff"/><span style="font-size:23px;font-weight:900;vertical-align:middle;letter-spacing:-.3px">KamiSM</span>
+        <div style="margin-top:30px;font-size:30px;line-height:1.22;font-weight:900;letter-spacing:-.6px;">{title}</div>
+      </div>
+      <div style="padding:32px 30px 30px;background:#fff;">
+        <div style="font-size:12px;font-weight:900;color:{accent};letter-spacing:1.4px;margin-bottom:14px;">{badge}</div>
+        <h2 style="margin:0 0 12px;font-size:21px;line-height:1.45;color:#111827;">{hello}</h2>
+        <p style="margin:0 0 26px;font-size:15px;line-height:1.9;color:#4b5563;">{subtitle}</p>
+        <div style="text-align:center;margin:0 auto 26px;padding:26px 12px;border-radius:18px;background:#f8fafc;border:1px solid #eef2f7;">
+          <div style="font-size:12px;color:#94a3b8;letter-spacing:2px;font-weight:900;margin-bottom:12px;">验证码</div>
+          <div style="font-family:'SFMono-Regular','Consolas','Courier New',monospace;font-size:50px;line-height:1;font-weight:900;letter-spacing:12px;text-indent:12px;color:#111827;">{code}</div>
+        </div>
+        <p style="margin:0;font-size:14px;line-height:1.9;color:#4b5563;">验证码将在 <b style="color:#111827;">10 分钟</b> 后失效，请勿转发或泄露给他人。</p>
+      </div>
+      <div style="padding:20px 30px;background:#f8fafc;border-top:1px solid #e5e7eb;color:#9ca3af;font-size:13px;line-height:1.7;">{footer_note}<br/>This email was sent by KamiSM. Please do not reply directly.</div>
+    </div>
+  </div>
+</body></html>"#, title=title, hello=hello, subtitle=subtitle, accent=accent, badge=badge, code=code, icon_src=icon_src, footer_note=footer_note)
 }
-
-
+fn build_verify_email(code: &str) -> String { build_code_email(code, "register") }
+fn build_reset_email(code: &str) -> String { build_code_email(code, "reset") }
+fn build_change_email(code: &str) -> String { build_code_email(code, "change_email") }
+fn build_custom_email(subject: &str, content: &str) -> String {
+    let icon_b64 = get_icon_base64();
+    let icon_src = format!("data:image/png;base64,{}", icon_b64);
+    let subject = esc_html(subject);
+    let content = esc_html(content).replace('\n', "<br/>");
+    format!(r#"<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width,initial-scale=1.0"/><title>{subject}</title></head>
+<body style="margin:0;padding:0;background:#e6ebf3;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',Arial,sans-serif;color:#111827;">
+  <div style="padding:28px 10px;background:#e6ebf3;">
+    <div style="max-width:650px;margin:0 auto;background:#fff;border-radius:22px;overflow:hidden;border:1px solid #dfe5ee;box-shadow:0 18px 50px rgba(15,23,42,.13);">
+      <div style="height:78px;padding:0 34px;display:flex;align-items:center;border-bottom:1px solid #edf0f5;background:#fff;">
+        <img src="{icon_src}" width="34" height="34" style="border-radius:10px;margin-right:12px;display:inline-block;vertical-align:middle"/>
+        <span style="font-size:26px;font-weight:900;letter-spacing:-.6px;color:#111827;vertical-align:middle;">KamiSM</span>
+      </div>
+      <div style="padding:44px 34px 42px;text-align:center;background:#fafafa;background-image:repeating-linear-gradient(90deg,rgba(17,24,39,.035) 0 1px,transparent 1px 46px),repeating-linear-gradient(0deg,rgba(17,24,39,.025) 0 1px,transparent 1px 46px);border-bottom:1px solid #edf0f5;">
+        <div style="display:inline-block;padding:8px 18px;border-radius:0;background:#eef6ff;color:#2563eb;font-size:15px;font-weight:900;letter-spacing:4px;margin-bottom:28px;">SYSTEM NOTICE</div>
+        <div style="font-size:42px;line-height:1.16;font-weight:950;color:#0f172a;letter-spacing:-1px;word-break:break-word;">{subject}</div>
+      </div>
+      <div style="padding:36px 36px 34px;background:#fff;">
+        <div style="font-size:21px;font-weight:900;color:#111827;margin:0 0 22px;line-height:1.55;">尊敬的 KamiSM 平台用户：</div>
+        <div style="font-size:16px;line-height:2.1;color:#4b5563;word-break:break-word;">{content}</div>
+        <div style="height:1px;background:#edf0f5;margin:30px 0 22px;"></div>
+        <div style="padding:18px 20px;border-radius:18px;background:#f8fafc;border:1px solid #edf2f7;color:#64748b;font-size:14px;line-height:1.9;">
+          <b style="display:block;color:#111827;margin-bottom:6px;font-size:15px;">温馨提示</b>
+          如有任何疑问，请通过平台内消息或官方支持渠道联系我们。请以平台页面展示的信息为准。
+        </div>
+      </div>
+      <div style="padding:28px 32px;background:#f8fafc;border-top:1px solid #e5e7eb;text-align:center;color:#64748b;font-size:14px;line-height:1.9;">
+        <div style="font-size:18px;font-weight:900;color:#111827;margin-bottom:6px;">KamiSM 卡密管理系统</div>
+        <div><a style="color:#2563eb;text-decoration:none;font-weight:800;">官方支持</a><span style="color:#cbd5e1;margin:0 10px;">·</span><a style="color:#2563eb;text-decoration:none;font-weight:800;">平台通知</a></div>
+        <div style="margin-top:8px;color:#9ca3af;">此邮件为系统通知，请勿直接回复 · © 2026 KamiSM</div>
+      </div>
+    </div>
+  </div>
+</body></html>"#, subject=subject, content=content, icon_src=icon_src)
+}
 
 pub async fn load_mailer_config(pool: &sqlx::PgPool) -> Result<MailerConfig> {
     let row: Option<(serde_json::Value,)> = sqlx::query_as("SELECT value FROM system_config WHERE key='mail.smtp'")
@@ -154,18 +136,18 @@ pub async fn load_mailer_config(pool: &sqlx::PgPool) -> Result<MailerConfig> {
     Ok(cfg)
 }
 
-pub async fn send_verify_code(config: &MailerConfig, to_email: &str, code: &str) -> Result<()> {
+async fn send_code_email(config: &MailerConfig, to_email: &str, code: &str, scene: &str) -> Result<()> {
     if config.smtp_user.is_empty() || config.smtp_pass.is_empty() {
         return Err(anyhow!("邮件服务配置不完整"));
     }
 
     let from = format!("{} <{}>", config.from_name, config.from_email);
-    let html_body = build_verify_email(code);
+    let html_body = match scene { "reset" => build_reset_email(code), "change_email" => build_change_email(code), _ => build_verify_email(code) };
 
     let email = Message::builder()
         .from(from.parse()?)
         .to(to_email.parse()?)
-        .subject(format!("【KamiSM】验证码 {} — 10分钟内有效", code))
+        .subject(match scene { "reset" => format!("【KamiSM】找回密码验证码 {} — 10分钟内有效", code), "change_email" => format!("【KamiSM】换绑邮箱验证码 {} — 10分钟内有效", code), _ => format!("【KamiSM】注册验证码 {} — 10分钟内有效", code) })
         .header(ContentType::TEXT_HTML)
         .body(html_body)?;
 
@@ -178,5 +160,21 @@ pub async fn send_verify_code(config: &MailerConfig, to_email: &str, code: &str)
 
     mailer.send(email).await?;
     tracing::info!("验证码邮件已发送至: {}", to_email);
+    Ok(())
+}
+
+
+pub async fn send_verify_code(config: &MailerConfig, to_email: &str, code: &str) -> Result<()> { send_code_email(config, to_email, code, "register").await }
+pub async fn send_reset_code_email(config: &MailerConfig, to_email: &str, code: &str) -> Result<()> { send_code_email(config, to_email, code, "reset").await }
+pub async fn send_change_email_code(config: &MailerConfig, to_email: &str, code: &str) -> Result<()> { send_code_email(config, to_email, code, "change_email").await }
+
+pub async fn send_custom_email(config: &MailerConfig, to_email: &str, subject: &str, content: &str) -> Result<()> {
+    if config.smtp_user.is_empty() || config.smtp_pass.is_empty() { return Err(anyhow!("邮件服务配置不完整")); }
+    let from = format!("{} <{}>", config.from_name, config.from_email);
+    let html_body = build_custom_email(subject, content);
+    let email = Message::builder().from(from.parse()?).to(to_email.parse()?).subject(format!("【KamiSM】{}", subject)).header(ContentType::TEXT_HTML).body(html_body)?;
+    let creds = Credentials::new(config.smtp_user.clone(), config.smtp_pass.clone());
+    let mailer = AsyncSmtpTransport::<Tokio1Executor>::relay(&config.smtp_host)?.port(config.smtp_port).credentials(creds).build();
+    mailer.send(email).await?;
     Ok(())
 }

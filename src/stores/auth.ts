@@ -1,4 +1,16 @@
 import { create } from 'zustand';
+const applyUserBackground = (role: string | null | undefined, user: any) => {
+  const bg = user?.background_url;
+  const key = 'kamism_bg_url_' + (role || 'guest');
+  if (bg) {
+    const url = String(bg);
+    localStorage.setItem(key, url);
+    document.documentElement.style.setProperty('--custom-bg', `url(${url})`);
+  } else {
+    localStorage.removeItem(key);
+    document.documentElement.style.removeProperty('--custom-bg');
+  }
+};
 
 export interface User {
   id: string;
@@ -49,6 +61,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     localStorage.setItem('refreshToken', refreshToken);
     localStorage.setItem('role', role);
     localStorage.setItem('user', JSON.stringify(user));
+    applyUserBackground(role, user);
     set({ token, refreshToken, role, user, viewMode: null });
   },
 
@@ -70,6 +83,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   updateUser: (partial: Partial<User>) => {
     const updated = { ...get().user, ...partial } as User;
     localStorage.setItem('user', JSON.stringify(updated));
+    applyUserBackground(get().role, updated);
     set({ user: updated });
     // 触发侧栏同步事件
     window.dispatchEvent(new Event('merchant-sync'));

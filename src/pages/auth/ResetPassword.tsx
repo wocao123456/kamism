@@ -1,7 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import { authApi } from '../../lib/api';
-import { Mail, Lock, ArrowRight, ShieldCheck } from 'lucide-react';
+import { Mail, Lock, ArrowRight, ShieldCheck, Loader2, Eye, EyeOff } from 'lucide-react';
 import appIcon from '../../assets/app-icon.png';
 import toast from 'react-hot-toast';
 
@@ -12,6 +12,10 @@ export default function ResetPassword() {
   const [loading, setLoading] = useState(false);
   const [codeSending, setCodeSending] = useState(false);
   const [countdown, setCountdown] = useState(0);
+  const [showPwd, setShowPwd] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+
+  useEffect(() => { document.title = '重置密码 - KamiSM'; }, []);
 
   const startCountdown = () => {
     setCountdown(60);
@@ -24,16 +28,34 @@ export default function ResetPassword() {
   };
 
   const handleSendCode = async () => {
-    if (!form.email.includes('@')) { toast.error('请输入正确的邮箱'); return; }
+    const email = form.email.trim();
+    if (!email.includes('@')) { toast.error('请输入正确的邮箱'); return; }
+    try {
+      const pendingRaw = sessionStorage.getItem('pending_reset');
+      const pending = pendingRaw ? JSON.parse(pendingRaw) : null;
+      if (pending?.email === email) {
+        toast('已存在有效验证码，请直接输入上一次邮箱验证码', { icon: '📩' });
+        setStep('code');
+        setCountdown(0);
+        return;
+      }
+    } catch {}
     setCodeSending(true);
     try {
-      const res = await authApi.sendResetCode(form.email);
+      const res = await authApi.sendResetCode(email);
+      const msg = res.data.message || '';
       if (res.data.success) {
+        sessionStorage.setItem('pending_reset', JSON.stringify({ email, at: Date.now() }));
         toast.success('验证码已发送，请查收邮件');
         setStep('code');
         startCountdown();
+      } else if (msg.includes('频繁') || msg.includes('60秒')) {
+        sessionStorage.setItem('pending_reset', JSON.stringify({ email, at: Date.now() }));
+        toast('已发送过验证码，请直接输入上一次邮箱验证码', { icon: '📩' });
+        setStep('code');
+        setCountdown(0);
       } else {
-        toast.error(res.data.message || '发送失败');
+        toast.error(msg || '发送失败');
       }
     } catch {
       toast.error('发送失败，请检查网络');
@@ -53,12 +75,9 @@ export default function ResetPassword() {
     if (form.password !== form.confirm) { toast.error('两次密码不一致'); return; }
     setLoading(true);
     try {
-      const res = await authApi.resetPassword({
-        email: form.email,
-        code: form.code,
-        new_password: form.password,
-      });
+      const res = await authApi.resetPassword({ email: form.email, code: form.code, new_password: form.password });
       if (res.data.success) {
+        sessionStorage.removeItem('pending_reset');
         toast.success('密码重置成功，请重新登录');
         navigate('/login');
       } else {
@@ -71,132 +90,74 @@ export default function ResetPassword() {
     }
   };
 
-  return (
-    <div style={{
-      minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-      background: 'radial-gradient(ellipse 80% 60% at 50% -20%, rgba(124,106,247,0.15), transparent)',
-    }}>
-      <div style={{ width: '100%', maxWidth: 420, padding: '0 20px' }}>
-        <div style={{ textAlign: 'center', marginBottom: 40 }}>
-          <img
-            src={appIcon}
-            alt="KamiSM"
-            style={{ width: 52, height: 52, margin: '0 auto 16px', display: 'block', borderRadius: 14, boxShadow: '0 8px 32px rgba(124,106,247,0.3)' }}
-          />
-          <h1 style={{ fontSize: 26, fontWeight: 800, letterSpacing: '-0.5px' }}>重置密码</h1>
-          <p style={{ color: 'var(--text-muted)', fontSize: 13, marginTop: 4 }}>
-            {step === 'email' && '输入注册邮箱，我们将发送验证码'}
-            {step === 'code' && '输入邮件中的验证码'}
-            {step === 'password' && '设置新密码'}
-          </p>
-        </div>
+  const subtitle = step === 'email'
+    ? '输入您的邮箱地址，我们将向您发送密码重置链接。'
+    : step === 'code'
+      ? `验证码已发送到 ${form.email}`
+      : '请设置一个新的安全密码。';
 
-        <div className="card" style={{ padding: 32 }}>
-          {/* 第一步：输入邮箱 */}
+  return (
+    <div className="auth-page">
+      <div className="auth-bg" />
+      <div className="auth-orbs"><span /><span /><span /></div>
+      <main className="auth-wrap">
+        <section className="auth-brand">
+          <img src={appIcon} alt="KamiSM" />
+          <h1>KamiSM</h1>
+          <p></p>
+        </section>
+
+        <section className="auth-card auth-step-card" key={step}>
+          <div className="auth-title">
+            <h2>重置密码</h2>
+            <p>{subtitle}</p>
+          </div>
+
           {step === 'email' && (
-            <form onSubmit={e => { e.preventDefault(); handleSendCode(); }}>
-              <div className="form-group">
-                <label className="form-label">邮箱</label>
-                <div style={{ position: 'relative' }}>
-                  <Mail size={15} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-                  <input
-                    type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })}
-                    placeholder="your@email.com" required style={{ paddingLeft: 36 }}
-                  />
-                </div>
-              </div>
-              <button type="submit" className="btn btn-primary"
-                style={{ width: '100%', justifyContent: 'center', marginTop: 8, padding: '12px' }}
-                disabled={codeSending}>
-                {codeSending ? <span className="spinner" /> : <><span>发送验证码</span><ArrowRight size={15} /></>}
+            <form className="auth-form" onSubmit={e => { e.preventDefault(); handleSendCode(); }}>
+              <label>邮箱
+                <div className="auth-input"><Mail /><input type="email" value={form.email} onChange={e => setForm({ ...form, email: e.target.value })} placeholder="请输入邮箱" required autoFocus /></div>
+              </label>
+              <button type="submit" className="auth-primary" disabled={codeSending}>
+                {codeSending ? <Loader2 className="spin" /> : <Mail />} {codeSending ? '发送中...' : '发送重置链接'}
               </button>
             </form>
           )}
 
-          {/* 第二步：输入验证码 */}
           {step === 'code' && (
-            <form onSubmit={e => { e.preventDefault(); handleVerifyCode(); }}>
-              <div className="form-group">
-                <label className="form-label">验证码</label>
-                <p style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>已发送至 {form.email}</p>
-                <div style={{ position: 'relative' }}>
-                  <ShieldCheck size={15} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-                  <input
-                    type="text" value={form.code} onChange={e => setForm({ ...form, code: e.target.value.replace(/\D/g, '').slice(0, 6) })}
-                    placeholder="6位数字验证码" required maxLength={6}
-                    style={{ paddingLeft: 36, letterSpacing: '6px', fontFamily: 'var(--mono)', fontSize: 16 }}
-                  />
-                </div>
+            <form className="auth-form" onSubmit={e => { e.preventDefault(); handleVerifyCode(); }}>
+              <label className="center">验证码
+                <input className="verify-code-input" inputMode="numeric" value={form.code} onChange={e => setForm({ ...form, code: e.target.value.replace(/\D/g, '').slice(0, 6) })} placeholder="000000" required maxLength={6} autoFocus />
+              </label>
+              <div className="verify-help">请输入邮件中的 6 位验证码</div>
+              <div className="auth-actions-row">
+                <button type="button" className="auth-secondary" onClick={() => setStep('email')}>返回</button>
+                <button type="submit" className="auth-primary"><ShieldCheck /> 下一步</button>
               </div>
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button type="button" className="btn btn-ghost"
-                  style={{ flex: 1, padding: '12px' }}
-                  onClick={() => setStep('email')}>
-                  返回
-                </button>
-                <button type="submit" className="btn btn-primary"
-                  style={{ flex: 1, justifyContent: 'center', padding: '12px' }}>
-                  <><span>下一步</span><ArrowRight size={15} /></>
-                </button>
-              </div>
-              <div style={{ textAlign: 'center', marginTop: 12, fontSize: 12, color: 'var(--text-muted)' }}>
-                {countdown > 0 ? `${countdown}秒后可重新发送` : (
-                  <button type="button" style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: 12 }}
-                    onClick={handleSendCode} disabled={codeSending}>
-                    重新发送验证码
-                  </button>
-                )}
-              </div>
+              <button type="button" className="auth-link-btn" onClick={handleSendCode} disabled={countdown > 0 || codeSending}>
+                {codeSending ? '发送中...' : countdown > 0 ? `${countdown}秒后可重新发送` : '重新发送验证码'}
+              </button>
             </form>
           )}
 
-          {/* 第三步：设置新密码 */}
           {step === 'password' && (
-            <form onSubmit={handleResetPassword}>
-              <div className="form-group">
-                <label className="form-label">新密码</label>
-                <div style={{ position: 'relative' }}>
-                  <Lock size={15} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-                  <input
-                    type="password" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })}
-                    placeholder="至少8位" required style={{ paddingLeft: 36 }}
-                  />
-                </div>
-              </div>
-
-              <div className="form-group">
-                <label className="form-label">确认密码</label>
-                <div style={{ position: 'relative' }}>
-                  <Lock size={15} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-                  <input
-                    type="password" value={form.confirm} onChange={e => setForm({ ...form, confirm: e.target.value })}
-                    placeholder="再次输入密码" required style={{ paddingLeft: 36 }}
-                  />
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', gap: 8 }}>
-                <button type="button" className="btn btn-ghost"
-                  style={{ flex: 1, padding: '12px' }}
-                  onClick={() => setStep('code')}>
-                  返回
-                </button>
-                <button type="submit" className="btn btn-primary"
-                  style={{ flex: 1, justifyContent: 'center', padding: '12px' }}
-                  disabled={loading}>
-                  {loading ? <span className="spinner" /> : <><span>重置密码</span><ArrowRight size={15} /></>}
-                </button>
+            <form className="auth-form" onSubmit={handleResetPassword}>
+              <label>新密码
+                <div className="auth-input"><Lock /><input type={showPwd ? 'text' : 'password'} value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} placeholder="至少8位" required /><button type="button" onClick={() => setShowPwd(v => !v)}>{showPwd ? <EyeOff /> : <Eye />}</button></div>
+              </label>
+              <label>确认密码
+                <div className="auth-input"><Lock /><input type={showConfirm ? 'text' : 'password'} value={form.confirm} onChange={e => setForm({ ...form, confirm: e.target.value })} placeholder="再次输入密码" required /><button type="button" onClick={() => setShowConfirm(v => !v)}>{showConfirm ? <EyeOff /> : <Eye />}</button></div>
+              </label>
+              <div className="auth-actions-row">
+                <button type="button" className="auth-secondary" onClick={() => setStep('code')}>返回</button>
+                <button type="submit" className="auth-primary" disabled={loading}>{loading ? <Loader2 className="spin" /> : <ArrowRight />} {loading ? '重置中...' : '重置密码'}</button>
               </div>
             </form>
           )}
+        </section>
 
-          <div style={{ textAlign: 'center', marginTop: 20, color: 'var(--text-muted)', fontSize: 13 }}>
-            记得密码了？
-            <Link to="/login" style={{ color: 'var(--accent)', textDecoration: 'none', fontWeight: 600, marginLeft: 4 }}>立即登录</Link>
-          </div>
-        </div>
-      </div>
+        <footer className="auth-footer">想起密码了？ <Link to="/login">登录</Link></footer>
+      </main>
     </div>
   );
 }
-

@@ -58,8 +58,8 @@ pub fn profile_router(state: AppState) -> Router<AppState> {
 async fn get_profile(State(state): State<AppState>, Extension(_claims): Extension<Claims>) -> Json<Value> {
     let uid = &_claims.sub;
     if _claims.role == "admin" {
-        let r: Option<(String, String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<chrono::DateTime<chrono::Utc>>)> = sqlx::query_as(
-            "SELECT a.id::text, a.username, a.email, a.avatar_url, a.background_url, a.api_key, m.plan, m.plan_expires_at FROM admins a LEFT JOIN merchants m ON m.id = a.id WHERE a.id::text = $1"
+        let r: Option<(String, String, String, Option<String>, Option<String>, Option<String>, Option<String>, Option<chrono::DateTime<chrono::Utc>>, Option<f64>)> = sqlx::query_as(
+            "SELECT a.id::text, a.username, a.email, a.avatar_url, a.background_url, a.api_key, m.plan, m.plan_expires_at, m.balance::float8 FROM admins a LEFT JOIN merchants m ON m.id = a.id WHERE a.id::text = $1"
         )
         .bind(uid)
         .fetch_optional(&state.pool)
@@ -67,7 +67,7 @@ async fn get_profile(State(state): State<AppState>, Extension(_claims): Extensio
         .unwrap_or(None);
 
         match r {
-            Some((id, u, e, a, bg, ak, plan, plan_expires_at)) => Json(json!({
+            Some((id, u, e, a, bg, ak, plan, plan_expires_at, balance)) => Json(json!({
                 "success": true,
                 "data": {
                     "id": id,
@@ -78,6 +78,7 @@ async fn get_profile(State(state): State<AppState>, Extension(_claims): Extensio
                     "api_key": ak,
                     "plan": plan.unwrap_or_else(|| "free".to_string()),
                     "plan_expires_at": plan_expires_at,
+                    "balance": balance.unwrap_or(0.0),
                     "user_type": "admin",
                 },
             })),
@@ -93,8 +94,9 @@ async fn get_profile(State(state): State<AppState>, Extension(_claims): Extensio
             Option<String>,
             Option<String>,
             Option<chrono::DateTime<chrono::Utc>>,
+            Option<f64>,
         )> = sqlx::query_as(
-            "SELECT id::text, username, email_encrypted, api_key_encrypted, plan, avatar_url, background_url, plan_expires_at FROM merchants WHERE id::text = $1"
+            "SELECT id::text, username, email_encrypted, api_key_encrypted, plan, avatar_url, background_url, plan_expires_at, balance::float8 FROM merchants WHERE id::text = $1"
         )
         .bind(uid)
         .fetch_optional(&state.pool)
@@ -102,7 +104,7 @@ async fn get_profile(State(state): State<AppState>, Extension(_claims): Extensio
         .unwrap_or(None);
 
         match r {
-            Some((id, u, e, k, p, a, bg, plan_expires_at)) => {
+            Some((id, u, e, k, p, a, bg, plan_expires_at, balance)) => {
                 let email = crate::db::encrypted_fields::EncryptedFieldsOps::decrypt_merchant_email(&state.encryptor, &e).unwrap_or(e);
                 let api_key = crate::db::encrypted_fields::EncryptedFieldsOps::decrypt_merchant_api_key(&state.encryptor, &k).unwrap_or_default();
                 Json(json!({
@@ -116,6 +118,7 @@ async fn get_profile(State(state): State<AppState>, Extension(_claims): Extensio
                         "plan_expires_at": plan_expires_at,
                         "avatar": a,
                         "background_url": bg,
+                        "balance": balance.unwrap_or(0.0),
                         "user_type": "merchant",
                     },
                 }))
@@ -210,12 +213,26 @@ async fn upload_avatar(
             let _ = std::fs::create_dir_all("/app/uploads/avatars");
             let _ = std::fs::write(format!("/app/uploads/{}", fnm), &d);
             let url = format!("/uploads/{}", fnm);
-            let tbl = if _claims.role == "admin" { "admins" } else { "merchants" };
-            let _ = sqlx::query(&format!("UPDATE {} SET avatar_url = $1 WHERE id::text = $2", tbl))
-                .bind(&url)
-                .bind(&_claims.sub)
-                .execute(&state.pool)
-                .await;
+            let id_str = &_claims.sub;
+            if _claims.role == "admin" {
+                let _ = sqlx::query("UPDATE admins SET avatar_url = $1 WHERE id::text = $2")
+                    .bind(&url)
+                    .bind(id_str)
+                    .execute(&state.pool)
+                    .await;
+                // 同步更新 merchants 表，使商户管理列表也能看到头像
+                let _ = sqlx::query("UPDATE merchants SET avatar_url = $1 WHERE id::text = $2")
+                    .bind(&url)
+                    .bind(id_str)
+                    .execute(&state.pool)
+                    .await;
+            } else {
+                let _ = sqlx::query("UPDATE merchants SET avatar_url = $1 WHERE id::text = $2")
+                    .bind(&url)
+                    .bind(id_str)
+                    .execute(&state.pool)
+                    .await;
+            }
             return Json(json!({"success": true, "data": {"avatar": url}}));
         }
     }

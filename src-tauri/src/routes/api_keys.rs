@@ -10,7 +10,6 @@ use uuid::Uuid;
 use crate::middleware::auth::{AppState, auth_middleware};
 use crate::utils::jwt::Claims;
 use axum::extract::Extension;
-
 pub fn api_keys_router(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/", get(list).post(create))
@@ -21,7 +20,6 @@ pub fn api_keys_router(state: AppState) -> Router<AppState> {
         .route_layer(middleware::from_fn_with_state(state.clone(), auth_middleware))
         .with_state(state)
 }
-
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ApiKeyForm {
     pub name: String,
@@ -62,7 +60,6 @@ pub struct ApiKeyForm {
     #[serde(default)]
     pub decrypt_code: Option<String>,
 }
-
 #[derive(Serialize)]
 pub struct ApiResponse {
     pub code: i32,
@@ -71,19 +68,15 @@ pub struct ApiResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<serde_json::Value>,
 }
-
 fn ok(data: serde_json::Value) -> Json<ApiResponse> {
     Json(ApiResponse { code: 200, msg: None, data: Some(data) })
 }
-
 fn ok_empty() -> Json<ApiResponse> {
     Json(ApiResponse { code: 200, msg: None, data: None })
 }
-
 fn err(msg: &str) -> Json<ApiResponse> {
     Json(ApiResponse { code: 400, msg: Some(msg.to_string()), data: None })
 }
-
 async fn list(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -102,7 +95,6 @@ async fn list(
     let data: Vec<serde_json::Value> = rows.into_iter().map(|r| r.0).collect();
     Ok(ok(serde_json::json!(data)))
 }
-
 async fn create(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -127,7 +119,6 @@ async fn create(
         .map(|_| ok(serde_json::json!({"id": id.to_string()})))
         .map_err(|e| { tracing::error!("创建失败: {:?}", e); StatusCode::INTERNAL_SERVER_ERROR })
 }
-
 async fn update(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -144,23 +135,19 @@ async fn update(
         .map(|_| ok_empty())
         .map_err(|e| { tracing::error!("更新失败: {:?}", e); StatusCode::INTERNAL_SERVER_ERROR })
 }
-
 async fn remove(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<ApiResponse>, StatusCode> {
     sqlx::query("DELETE FROM api_keys WHERE id=$1").bind(id).execute(&state.pool).await
         .map(|_| ok_empty()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
-
 async fn toggle(State(state): State<AppState>, Path(id): Path<Uuid>) -> Result<Json<ApiResponse>, StatusCode> {
     sqlx::query("UPDATE api_keys SET status=CASE WHEN status='active' THEN 'disabled' ELSE 'active' END, updated_at=NOW() WHERE id=$1")
         .bind(id).execute(&state.pool).await
         .map(|_| ok_empty()).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
 }
-
 #[derive(Deserialize)]
 struct StatsQuery {
     card_hash: Option<String>,
 }
-
 async fn key_stats(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -178,14 +165,12 @@ async fn key_stats(
         .bind(&key_name.0).fetch_one(&state.pool).await.unwrap_or((0,));
     Ok(ok(serde_json::json!({"key_name":key_name.0,"today":today_count.0,"total":total.0,"devices":devices.0})))
 }
-
 #[derive(Deserialize)]
 struct LogQuery {
     device_id: Option<String>,
     page: Option<i64>,
     page_size: Option<i64>,
 }
-
 async fn device_logs(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
@@ -196,7 +181,6 @@ async fn device_logs(
     let page = q.page.unwrap_or(1).max(1);
     let page_size = q.page_size.unwrap_or(10).min(50);
     let offset = (page - 1) * page_size;
-
     let rows: Vec<(serde_json::Value,)> = if let Some(ref did) = q.device_id {
         sqlx::query_as("SELECT row_to_json(t) FROM (SELECT ip, device_id, COUNT(*) as count, MAX(created_at) as last_call FROM api_call_logs WHERE key_name=$1 AND device_id=$2 GROUP BY ip, device_id, DATE(created_at) ORDER BY last_call DESC LIMIT $3 OFFSET $4) t")
             .bind(&key_name.0).bind(did).bind(page_size).bind(offset)

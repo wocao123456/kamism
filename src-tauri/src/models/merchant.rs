@@ -18,6 +18,8 @@ pub struct Merchant {
     pub verify_token: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub avatar_url: Option<String>,
+    pub balance: Option<rust_decimal::Decimal>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -31,6 +33,8 @@ pub struct MerchantPublic {
     pub plan_expires_at: Option<DateTime<Utc>>,
     pub email_verified: bool,
     pub created_at: DateTime<Utc>,
+    pub avatar: Option<String>,
+    pub balance: f64,
 }
 
 impl From<Merchant> for MerchantPublic {
@@ -45,6 +49,8 @@ impl From<Merchant> for MerchantPublic {
             plan_expires_at: m.plan_expires_at,
             email_verified: m.email_verified,
             created_at: m.created_at,
+            avatar: m.avatar_url,
+            balance: m.balance.map(|x| x.to_string().parse::<f64>().unwrap_or(0.0)).unwrap_or(0.0),
         }
     }
 }

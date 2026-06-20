@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { agentApi } from '../../lib/api';
-import { Plus, Trash2, RefreshCw, Users, TrendingUp, Copy, Network } from 'lucide-react';
+import { Plus, Trash2, RefreshCw, Users, TrendingUp, Copy, Network, Ticket, BarChart3 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { useConfirm } from '../../stores/confirm';
 
@@ -217,34 +217,30 @@ export default function Agents() {
 
   const agentPages = Math.ceil(agentTotal / PAGE_SIZE);
   const commPages  = Math.ceil(commTotal  / PAGE_SIZE);
+  const commissionUnits = commissions.reduce((sum, c) => sum + Number(c.units || 0), 0);
 
   return (
-    <div className="fade-in">
-      {/* 页头 */}
-      <div className="page-header">
-        <div>
-          <h1 className="page-title">代理管理</h1>
-          <p className="page-subtitle">管理下级代理配额与分润，或加入上级代理关系</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn btn-ghost" onClick={() => setShowJoinModal(true)}>
-            <Network size={14} /> 加入代理关系
-          </button>
-          <button className="btn btn-primary" onClick={() => setShowInviteModal(true)}>
-            <Plus size={14} /> 生成邀请码
-          </button>
-        </div>
+    <div className="dpage agents-page">
+      <div className="stat-grid agents-stat-grid" style={{gap:8}}>
+        <div className="stat-card-v2"><div className="stat-card-v2__info"><div className="stat-card-v2__label">代理总数</div><div className="stat-card-v2__value" style={{color:'#1890ff'}}>{agentTotal}</div><div className="stat-card-v2__desc">下级代理关系</div></div><div className="stat-card-v2__icon" style={{background:'#e6f4ff',color:'#1890ff'}}><Users size={20}/></div></div>
+        <div className="stat-card-v2"><div className="stat-card-v2__info"><div className="stat-card-v2__label">待使用邀请码</div><div className="stat-card-v2__value" style={{color:'#faad14'}}>{pendingInvites.length}</div><div className="stat-card-v2__desc">可复制邀请</div></div><div className="stat-card-v2__icon" style={{background:'#fffbe6',color:'#faad14'}}><Ticket size={20}/></div></div>
+        <div className="stat-card-v2"><div className="stat-card-v2__info"><div className="stat-card-v2__label">累计激活</div><div className="stat-card-v2__value" style={{color:'#52c41a'}}>{tab === 'my_relation' ? myTotalUnits : commissionUnits}</div><div className="stat-card-v2__desc">分润统计数据</div></div><div className="stat-card-v2__icon" style={{background:'#f6ffed',color:'#52c41a'}}><TrendingUp size={20}/></div></div>
+        <div className="stat-card-v2"><div className="stat-card-v2__info"><div className="stat-card-v2__label">分润比例</div><div className="stat-card-v2__value" style={{color:'#8b5cf6'}}>{myRelation ? `${myRelation.commission_rate}%` : `${inviteForm.commission_rate}%`}</div><div className="stat-card-v2__desc">默认/上级比例</div></div><div className="stat-card-v2__icon" style={{background:'#f3e8ff',color:'#8b5cf6'}}><BarChart3 size={20}/></div></div>
+      </div>
+
+      <div className="agents-actions-row">
+        <button className="btn btn-ghost" onClick={() => setShowJoinModal(true)}>
+          <Network size={14} /> 加入代理关系
+        </button>
+        <button className="btn btn-primary" onClick={() => setShowInviteModal(true)}>
+          <Plus size={14} /> 生成邀请码
+        </button>
       </div>
 
       {/* Tab */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '1px solid var(--border)', paddingBottom: 0 }}>
+      <div className="agent-tabs segmented-control">
         {([['my_agents','我的代理',<Users size={14}/>],['commissions','分润统计',<TrendingUp size={14}/>],['my_relation','我的上级',<Network size={14}/>]] as const).map(([key, label, icon]) => (
-          <button key={key} onClick={() => setTab(key)} style={{
-            padding: '8px 16px', border: 'none', cursor: 'pointer', fontSize: 13,
-            borderBottom: tab === key ? '2px solid var(--accent)' : '2px solid transparent',
-            color: tab === key ? 'var(--accent)' : 'var(--text-muted)',
-            background: 'none', display: 'flex', alignItems: 'center', gap: 6,
-          }}>
+          <button key={key} onClick={() => setTab(key)} className={`seg-item ${tab === key ? 'is-active' : ''}`}>
             {icon} {label}
           </button>
         ))}
@@ -254,12 +250,12 @@ export default function Agents() {
       {tab === 'my_agents' && (
         <>
           {pendingInvites.length > 0 && (
-            <div style={{ marginBottom: 16, padding: '12px 16px', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)', borderRadius: 10 }}>
+            <div className="agents-pending-card" style={{ marginBottom: 16, padding: '12px 16px', background: 'rgba(251,191,36,0.08)', border: '1px solid rgba(251,191,36,0.25)', borderRadius: 10 }}>
               <p style={{ fontSize: 12, fontWeight: 600, color: '#fbbf24', marginBottom: 8 }}>待使用邀请码</p>
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
                 {pendingInvites.map(inv => (
                   <button key={inv.invite_code} onClick={() => copyCode(inv.invite_code)}
-                    className="btn btn-ghost"
+                    className="btn btn-ghost agents-invite-chip"
                     style={{ fontFamily: 'monospace', fontSize: 13, gap: 6 }}>
                     {inv.invite_code} <Copy size={12}/>
                     <span style={{ color: 'var(--text-muted)', fontSize: 11 }}>配额{inv.quota_total} · 分润{inv.commission_rate}%</span>
@@ -268,10 +264,10 @@ export default function Agents() {
               </div>
             </div>
           )}
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-            <button className="btn btn-ghost" onClick={() => loadAgents()}><RefreshCw size={14}/> 刷新</button>
+          <div className="agents-toolbar" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+            <button className="btn btn-ghost" onClick={() => loadAgents()}><RefreshCw className="refresh-icon" size={14}/> 刷新</button>
           </div>
-          <div className="table-wrap">
+          <div className="table-wrap agents-table agents-table--my-agents">
             <table>
               <thead><tr><th>代理用户</th><th>已用 / 配额</th><th>分润比例</th><th>状态</th><th>邀请码</th><th>加入时间</th><th>操作</th></tr></thead>
               <tbody>
@@ -280,7 +276,7 @@ export default function Agents() {
                     {Array.from({length:7}).map((_,j) => <td key={j}><span className="skeleton" style={{width:'60%'}}/></td>)}
                   </tr>
                 )) : agents.length === 0 ? (
-                  <tr><td colSpan={7}><div className="empty-state"><div className="empty-state-icon">👥</div><div className="empty-state-text">暂无代理，生成邀请码邀请代理加入</div></div></td></tr>
+                  <tr className="agents-empty-row"><td colSpan={7}><div className="empty-state agents-empty-card"><div className="empty-state-icon">👥</div><div className="empty-state-text">暂无代理，生成邀请码邀请代理加入</div></div></td></tr>
                 ) : agents.map((a, idx) => (
                   <tr key={a.id} className="data-enter" style={{animationDelay:`${idx*30}ms`}}>
                     <td><span style={{fontWeight:600}}>{a.agent_username}</span></td>
@@ -334,10 +330,10 @@ export default function Agents() {
       {/* ── 分润统计 ── */}
       {tab === 'commissions' && (
         <>
-          <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
-            <button className="btn btn-ghost" onClick={() => loadCommissions()}><RefreshCw size={14}/> 刷新</button>
+          <div className="agents-toolbar" style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 12 }}>
+            <button className="btn btn-ghost" onClick={() => loadCommissions()}><RefreshCw className="refresh-icon" size={14}/> 刷新</button>
           </div>
-          <div className="table-wrap">
+          <div className="table-wrap agents-table agents-table--commissions">
             <table>
               <thead><tr><th>代理用户</th><th>分润比例</th><th>激活数</th><th>时间</th></tr></thead>
               <tbody>
@@ -392,7 +388,7 @@ export default function Agents() {
                 <TrendingUp size={15} style={{color:'var(--accent)'}}/>
                 <span style={{fontSize:13,color:'var(--text-dim)'}}>我的累计激活：<span style={{fontWeight:700,color:'var(--accent)'}}>{myTotalUnits} 张</span></span>
               </div>
-              <div className="table-wrap">
+              <div className="table-wrap agents-table agents-table--my-relation">
                 <table>
                   <thead><tr><th>分润比例</th><th>激活数</th><th>时间</th></tr></thead>
                   <tbody>
