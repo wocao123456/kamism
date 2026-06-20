@@ -65,7 +65,5 @@ else
   echo "[$(date)] DATABASE_URL not found, skip writing installed version" >> "$LOG"
 fi
 
-echo "[$(date)] [5.5/6] prune build cache..." >> "$LOG"
-docker builder prune -f >> "$LOG" 2>&1
 echo "[$(date)] [6/6] done" >> "$LOG"
 echo "[$(date)] ===== system update end =====" >> "$LOG"
