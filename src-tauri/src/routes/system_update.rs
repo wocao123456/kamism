@@ -132,6 +132,32 @@ fn admin_only(claims: &Claims) -> Option<Response> {
     }
 }
 
+/// 从日志中解析当前更新阶段
+fn parse_phase(log: &str) -> (String, String) {
+    let last_progress = log
+        .lines()
+        .rev()
+        .find(|l| l.contains("[") && l.contains("]") && l.contains("/6"))
+        .unwrap_or("");
+    if last_progress.contains("[1/6]") {
+        ("fetching".into(), "正在拉取最新代码...".into())
+    } else if last_progress.contains("[2/6]") {
+        ("building".into(), "正在准备环境...".into())
+    } else if last_progress.contains("[3/6]") {
+        ("building".into(), "正在重新构建镜像...".into())
+    } else if last_progress.contains("[4/6]") {
+        ("restarting".into(), "正在重启容器...".into())
+    } else if last_progress.contains("[5/6]") {
+        ("finalizing".into(), "正在写入版本信息...".into())
+    } else if last_progress.contains("[6/6]") || last_progress.contains("update end") {
+        ("done".into(), "更新完成".into())
+    } else if last_progress.contains("update start") {
+        ("preparing".into(), "正在准备更新...".into())
+    } else {
+        ("idle".into(), String::new())
+    }
+}
+
 async fn update_status(
     State(state): State<AppState>,
     Extension(claims): Extension<Claims>,
@@ -169,10 +195,38 @@ async fn update_status(
     );
 
     let has_update = current_hash != latest;
+    let log_content = tail_log();
     let running = fs::read_to_string(format!("{}/.auto_update_running", workdir()))
         .ok()
         .map(|s| !s.trim().is_empty())
         .unwrap_or(false);
+
+    // 检测是否有进程在跑
+    let pid_alive = if running {
+        let pid = fs::read_to_string(format!("{}/.auto_update_running", workdir()))
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        if !pid.is_empty() && pid != "1" {
+            sh(&format!("kill -0 {} 2>/dev/null && echo yes || echo no", pid))
+                .contains("yes")
+        } else {
+            true // 容器内可能无法 kill -0 宿主进程
+        }
+    } else {
+        false
+    };
+
+    let (phase, phase_message) = if pid_alive || running {
+        parse_phase(&log_content)
+    } else {
+        ("idle".into(), String::new())
+    };
+
+    // 清理残留的 running 标记
+    if running && !pid_alive && phase == "idle" {
+        let _ = fs::remove_file(format!("{}/.auto_update_running", workdir()));
+    }
 
     let display_changelog = if has_update {
         first_section(&remote_changelog)
@@ -188,9 +242,11 @@ async fn update_status(
         "current_version": current_version,
         "latest_version": first_heading(&remote_changelog),
         "has_update": has_update,
-        "running": running,
+        "running": running && pid_alive,
+        "phase": phase,
+        "phase_message": phase_message,
         "changelog": display_changelog,
-        "log": tail_log()
+        "log": log_content
     }})).into_response()
 }
 

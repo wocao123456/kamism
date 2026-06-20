@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import toast from 'react-hot-toast';
-import { Upload, Save, LayoutDashboard, Package, Key, Activity, Wallet, Bell, ShieldAlert, Network, BookOpen, Webhook, Store, RefreshCw, Github, Power, SlidersHorizontal, CheckCircle2, AlertTriangle, Database, HardDrive, Mail, Server, Box } from 'lucide-react';
+import { Upload, Save, LayoutDashboard, Package, Key, Activity, Wallet, Bell, ShieldAlert, Network, BookOpen, Webhook, Store, RefreshCw, Github, Power, SlidersHorizontal, CheckCircle2, AlertTriangle, Database, HardDrive, Mail, Server, Box, Download, X, ChevronRight, Loader2 } from 'lucide-react';
 import { useAuthStore } from '../../stores/auth';
 import { adminApi } from '../../lib/api';
 import appIcon from '../../assets/app-icon.png';
@@ -40,6 +40,15 @@ export default function SettingsPage() {
   const pollRef = useRef<number | null>(null);
   const sysPollRef = useRef<number | null>(null);
 
+  // 新增：更新相关状态
+  const [applying, setApplying] = useState(false);
+  const applyingRef = useRef(false);
+  const [progressVisible, setProgressVisible] = useState(false);
+  const [progressPhase, setProgressPhase] = useState('');
+  const [progressMessage, setProgressMessage] = useState('');
+  const [changelogVisible, setChangelogVisible] = useState(false);
+  const [logVisible, setLogVisible] = useState(false);
+
   const [oauthEnabled, setOauthEnabled] = useState(false);
   const [appid, setAppid] = useState('');
   const [appkey, setAppkey] = useState('');
@@ -72,11 +81,76 @@ export default function SettingsPage() {
       const token = localStorage.getItem('token');
       const res = await fetch('/api/system-update/status', { headers: { Authorization: `Bearer ${token}` } });
       const json = await res.json();
-      if (json.success) { setUpdateInfo(json.data); if (!silent) { const nowIso=new Date().toISOString(); setLastCheckTime(nowIso); localStorage.setItem('kamism_auto_update_last_check', nowIso); } if (localStorage.getItem('kamism_auto_update_enabled')==='1' && json.data?.has_update && !json.data?.running) { fetch('/api/system-update/apply',{method:'POST',headers:{Authorization:`Bearer ${localStorage.getItem('token')}`}}).catch(()=>{}); } if (json.data?.running) { if (!pollRef.current) pollRef.current = window.setInterval(() => checkForUpdates(true), 2000); } else stopPolling(); }
+      if (json.success) {
+        setUpdateInfo(json.data);
+        if (json.data?.running) {
+          if (!applyingRef.current) { applyingRef.current = true; setApplying(true); }
+          setProgressVisible(true);
+          setProgressPhase(json.data.phase || 'running');
+          setProgressMessage(json.data.phase_message || '更新中...');
+          if (!pollRef.current) pollRef.current = window.setInterval(() => checkForUpdates(true), 3000);
+        } else {
+          if (applyingRef.current && !json.data?.running) {
+            // 更新刚完成
+            applyingRef.current = false;
+            setApplying(false);
+            setProgressPhase('done');
+            setProgressMessage('更新完成，页面即将刷新...');
+            stopPolling();
+            setTimeout(() => window.location.reload(), 3000);
+          }
+        }
+        if (!silent) {
+          const nowIso=new Date().toISOString();
+          setLastCheckTime(nowIso);
+          localStorage.setItem('kamism_auto_update_last_check', nowIso);
+        }
+        if (localStorage.getItem('kamism_auto_update_enabled')==='1' && json.data?.has_update && !json.data?.running) {
+          fetch('/api/system-update/apply',{method:'POST',headers:{Authorization:`Bearer ${localStorage.getItem('token')}`}}).catch(()=>{});
+        }
+      }
       else if (!silent && res.status !== 403) toast.error(json.message || '检查更新失败');
     } catch { if (!silent && isAdmin) toast.error('检查更新失败'); }
     finally { if (!silent) setChecking(false); }
   };
+
+  const applyUpdate = async () => {
+    if (applying) { toast('更新任务已在进行中'); return; }
+    const msg = updateInfo?.has_update
+      ? `确认更新到 v${String(updateInfo.latest_version || '').match(/v?\d+(?:\.\d+){1,3}/)?.[0] || '最新版'}？\n\n系统将执行以下操作：\n1. 从 Git 拉取最新代码\n2. 重新构建 Docker 镜像\n3. 重启 app/web 容器\n4. 写入版本信息\n\n更新期间服务会短暂中断。`
+      : '当前已是最新版本，无需更新。';
+    if (updateInfo?.has_update && !confirm(msg)) return;
+    if (!updateInfo?.has_update) { toast.success('当前已是最新版本'); return; }
+
+    setApplying(true);
+    applyingRef.current = true;
+    setProgressVisible(true);
+    setProgressPhase('preparing');
+    setProgressMessage('正在提交更新任务...');
+
+    try {
+      const token = localStorage.getItem('token');
+      const res = await fetch('/api/system-update/apply', { method: 'POST', headers: { Authorization: `Bearer ${token}` } });
+      const json = await res.json();
+      if (json.success) {
+        toast.success('系统更新已开始');
+        if (!pollRef.current) pollRef.current = window.setInterval(() => checkForUpdates(true), 3000);
+      } else {
+        setApplying(false);
+        applyingRef.current = false;
+        setProgressPhase('error');
+        setProgressMessage(json.message || '启动更新失败');
+        toast.error(json.message || '启动更新失败');
+      }
+    } catch {
+      setApplying(false);
+      applyingRef.current = false;
+      setProgressPhase('error');
+      setProgressMessage('网络错误');
+      toast.error('启动更新失败');
+    }
+  };
+
   const restartPanel = async () => { if (!confirm('确定要重启面板吗？重启期间服务将短暂中断。')) return; toast('正在重启面板...'); try { await fetch('/api/system/restart',{method:'POST',headers:{Authorization:`Bearer ${localStorage.getItem('token')}`}}); } catch {} setTimeout(()=>window.location.reload(), 4500); };
   const refreshHealth = async () => { setCheckingHealth(true); try { const token=localStorage.getItem('token'); const [hi, hf] = await Promise.all([fetch('/api/system/info',{headers:{Authorization:`Bearer ${token}`}}).then(r=>r.json()), fetch('/api/system/health-full',{headers:{Authorization:`Bearer ${token}`}}).then(r=>r.json())]); setSystemInfo(hi.data||hi||{}); setHealthInfo(hf.data||hf||{}); toast.success('检测完成'); } catch { toast.error('检测失败'); } finally { setCheckingHealth(false); } };
 
@@ -130,11 +204,31 @@ export default function SettingsPage() {
             <h2 className="hero-title" style={{margin:'0 0 6px',fontSize:28,fontWeight:900}}>KamiSM</h2>
             <p className="hero-desc2" style={{margin:'0 0 24px',fontSize:15,color:'var(--t2)'}}>轻量级卡密管理平台</p>
             <div className="hero-ver-row" style={{display:'flex',justifyContent:'center',gap:68,marginBottom:24}}>
-              <div><div style={{fontSize:13,color:'var(--t3)',marginBottom:8}}>当前版本</div><div className="hero-ver" style={{fontSize:18,fontWeight:900,color:'#3da0f5'}}>v{currentVersion}</div></div>
-              <div><div style={{fontSize:13,color:'var(--t3)',marginBottom:8}}>技术栈</div><div className="hero-tech" style={{fontSize:15,fontWeight:700,color:'var(--t2)',lineHeight:1.2,whiteSpace:'nowrap'}}>Rust + React</div></div>
+              <div>
+                <div style={{fontSize:13,color:'var(--t3)',marginBottom:8}}>当前版本</div>
+                <div className="hero-ver" style={{fontSize:18,fontWeight:900,color:'#3da0f5'}}>v{currentVersion}</div>
+                {updateInfo && <div style={{fontSize:11,color:'var(--t3)',marginTop:4}}>{updateInfo.current_message}</div>}
+              </div>
+              <div>
+                <div style={{fontSize:13,color:'var(--t3)',marginBottom:8}}>技术栈</div>
+                <div className="hero-tech" style={{fontSize:15,fontWeight:700,color:'var(--t2)',lineHeight:1.2,whiteSpace:'nowrap'}}>Rust + React</div>
+              </div>
             </div>
+            {updateInfo?.has_update && (
+              <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:8,marginBottom:18,padding:'10px 16px',borderRadius:12,background:'rgba(59,130,246,.08)',border:'1px solid rgba(59,130,246,.18)'}}>
+                <Download size={16} color="#3b82f6"/>
+                <span style={{fontSize:13,fontWeight:700,color:'#3b82f6'}}>发现新版本 v{String(updateInfo.latest_version || '').match(/v?\d+(?:\.\d+){1,3}/)?.[0] || ''}</span>
+                <span style={{fontSize:12,color:'var(--t3)'}}>· {updateInfo.latest_message}</span>
+                <button onClick={()=>setChangelogVisible(true)} style={{border:0,background:'transparent',color:'#3b82f6',cursor:'pointer',fontSize:12,fontWeight:700,display:'flex',alignItems:'center',gap:2}}>更新日志<ChevronRight size={13}/></button>
+              </div>
+            )}
             <div className="hero-actions-k" style={{display:'flex',gap:14,justifyContent:'center',flexWrap:'wrap'}}>
-              <button className="pill-btn" onClick={()=>checkForUpdates()} disabled={checking} style={{background:'#3da0f5',color:'#fff',padding:'0 30px'}}><RefreshCw className={`refresh-icon ${checking?'spin':''}`} size={18}/>{checking?'检查中...':'检查系统更新'}</button>
+              <button className="pill-btn" onClick={()=>checkForUpdates()} disabled={checking} style={{background:'#3da0f5',color:'#fff',padding:'0 30px'}}><RefreshCw className={`refresh-icon ${checking?'spin':''}`} size={18}/>{checking?'检查中...':'检查更新'}</button>
+              {updateInfo?.has_update && (
+                <button className="pill-btn" onClick={applyUpdate} disabled={applying} style={{background:applying?'#94a3b8':'#10b981',color:'#fff',padding:'0 30px'}}>
+                  {applying ? <><Loader2 className="spin" size={18}/> 更新中...</> : <><Download size={18}/> 一键更新</>}
+                </button>
+              )}
               <button className="pill-btn" onClick={restartPanel} style={{background:'#f2aa2c',color:'#fff',padding:'0 30px'}}><Power size={18}/>重启面板</button>
               <button className="pill-btn" onClick={()=>window.location.href='https://github.com/wocao123456/kamism'} style={{background:'var(--fc,#f8fafc)',color:'var(--t1)',border:'1px solid var(--bd)',padding:'0 30px'}}><Github size={18}/>访问 GitHub</button>
             </div>
@@ -152,7 +246,57 @@ export default function SettingsPage() {
           <div className="update-foot" style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:14}}>
             {[[ '#3b82f6','最后检查时间',fmtDate(lastCheckTime) ],[ '#10b981','当前状态', updateInfo?.has_update?'发现新版本':'系统已是最新版本' ],[ '#36cfc9','下次检查时间',nextCheck ]].map(([c,l,v])=><div key={l} style={{display:'flex',gap:9,alignItems:'flex-start'}}><span style={{width:8,height:8,borderRadius:'50%',background:c,boxShadow:`0 0 0 3px ${c}22`,marginTop:5}}/><div><div style={{fontSize:12,color:'var(--t3)'}}>{l}</div><div style={{fontSize:13,fontWeight:700,color:l==='当前状态'?'#10b981':'var(--t2)'}}>{v}</div></div></div>)}
           </div>
+          {updateInfo?.log && (
+            <div style={{marginTop:16}}>
+              <button onClick={()=>setLogVisible(!logVisible)} style={{border:0,background:'transparent',color:'#3da0f5',cursor:'pointer',fontSize:13,fontWeight:700}}>{logVisible?'收起日志':'查看更新日志'}</button>
+              {logVisible && <pre style={{marginTop:8,maxHeight:300,overflow:'auto',background:'var(--fc,#f8fafc)',border:'1px solid var(--bd,#edf0f5)',borderRadius:12,padding:'12px 14px',fontSize:12,lineHeight:1.6,color:'var(--t2)',whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{updateInfo.log}</pre>}
+            </div>
+          )}
         </SettingsCard>
+
+        {/* 更新进度弹窗 */}
+        {progressVisible && (
+          <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.45)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={(e)=>{ if(e.target===e.currentTarget && progressPhase!=='done' && progressPhase!=='error') setProgressVisible(false); }}>
+            <div style={{background:'#fff',borderRadius:20,padding:'36px 32px',maxWidth:440,width:'calc(100% - 32px)',boxShadow:'0 24px 70px rgba(0,0,0,.18)',textAlign:'center'}} onClick={e=>e.stopPropagation()}>
+              {progressPhase === 'done' ? (
+                <div style={{width:64,height:64,borderRadius:'50%',background:'#10b981',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 20px'}}><CheckCircle2 size={32} color="#fff"/></div>
+              ) : progressPhase === 'error' ? (
+                <div style={{width:64,height:64,borderRadius:'50%',background:'#ef4444',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 20px'}}><AlertTriangle size={32} color="#fff"/></div>
+              ) : (
+                <div style={{width:64,height:64,borderRadius:'50%',background:'linear-gradient(135deg,#3b82f6,#06b6d4)',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 20px'}}><Loader2 className="spin" size={32} color="#fff"/></div>
+              )}
+              <h3 style={{margin:'0 0 12px',fontSize:20,fontWeight:900,color:'#0f172a'}}>{progressPhase === 'done' ? '更新完成' : progressPhase === 'error' ? '更新失败' : '正在更新系统'}</h3>
+              <p style={{margin:'0 0 24px',fontSize:14,color:'#64748b',lineHeight:1.6}}>{progressMessage}</p>
+              {progressPhase !== 'done' && progressPhase !== 'error' && (
+                <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:8,marginBottom:16}}>
+                  <div style={{width:200,height:6,borderRadius:3,background:'#e5e7eb',overflow:'hidden'}}>
+                    <div style={{height:'100%',borderRadius:3,background:'linear-gradient(90deg,#3b82f6,#06b6d4)',transition:'width .5s',width: progressPhase==='preparing'?'15%':progressPhase==='fetching'?'30%':progressPhase==='building'?'55%':progressPhase==='restarting'?'80%':progressPhase==='finalizing'?'95%':'100%'}}/>
+                  </div>
+                </div>
+              )}
+              {progressPhase === 'error' && (
+                <button onClick={()=>{ setProgressVisible(false); setApplying(false); applyingRef.current = false; }} style={{height:40,padding:'0 28px',border:0,borderRadius:12,background:'#f1f5f9',color:'#475569',fontWeight:700,cursor:'pointer',fontSize:14}}>关闭</button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* 更新日志弹窗 */}
+        {changelogVisible && (
+          <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.45)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={(e)=>{ if(e.target===e.currentTarget) setChangelogVisible(false); }}>
+            <div style={{background:'#fff',borderRadius:20,padding:'28px 32px',maxWidth:560,maxHeight:'70vh',width:'calc(100% - 32px)',boxShadow:'0 24px 70px rgba(0,0,0,.18)',display:'flex',flexDirection:'column'}} onClick={e=>e.stopPropagation()}>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
+                <h3 style={{margin:0,fontSize:18,fontWeight:900,color:'#0f172a'}}>更新日志</h3>
+                <button onClick={()=>setChangelogVisible(false)} style={{border:0,background:'transparent',cursor:'pointer',padding:4}}><X size={20} color="#94a3b8"/></button>
+              </div>
+              <pre style={{margin:0,flex:1,overflow:'auto',fontSize:13,lineHeight:1.7,color:'#475569',whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{updateInfo?.changelog || '暂无更新日志'}</pre>
+              <div style={{display:'flex',gap:12,marginTop:20,justifyContent:'flex-end'}}>
+                <button onClick={()=>setChangelogVisible(false)} style={{height:40,padding:'0 24px',border:0,borderRadius:12,background:'#f1f5f9',color:'#475569',fontWeight:700,cursor:'pointer',fontSize:14}}>关闭</button>
+                {updateInfo?.has_update && <button onClick={()=>{ setChangelogVisible(false); applyUpdate(); }} style={{height:40,padding:'0 24px',border:0,borderRadius:12,background:'#10b981',color:'#fff',fontWeight:700,cursor:'pointer',fontSize:14,display:'flex',alignItems:'center',gap:8}}><Download size={16}/> 立即更新</button>}
+              </div>
+            </div>
+          </div>
+        )}
 
 
         <div className="two-grid">
