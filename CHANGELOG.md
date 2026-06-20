@@ -2,7 +2,7 @@
 
 所有重要变更都会记录在此文件中。
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
-## [v2.0.112] - 2026-06-20
+## [v2.0.122] - 2026-06-20
 ### 修复
 - **修复同版本误报更新**：后端 `has_update` 判断改为同时参考数据库记录版本和本地 CHANGELOG 版本，避免 `system_versions` 记录滞后导致 `v1.5.0` 仍提示「发现新版本 v1.5.0」。
 - **前端版本号兜底**：新增 `remoteVersionNewer()` 前端版本比较函数，即使后端返回 `has_update: true`，只要前端解析到当前版本与远程版本相同，也不显示「发现新版本」和「一键更新」按钮。
