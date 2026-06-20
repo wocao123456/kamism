@@ -53,6 +53,65 @@ fn first_heading(md: &str) -> String {
         .trim()
         .to_string()
 }
+
+fn extract_version_text(value: &str) -> String {
+    let s = value.trim();
+    if s.is_empty() {
+        return String::new();
+    }
+    if let Some(start) = s.find('[') {
+        if let Some(end_rel) = s[start + 1..].find(']') {
+            return s[start + 1..start + 1 + end_rel].trim().to_string();
+        }
+    }
+    for token in s.split(|c: char| c.is_whitespace() || c == '-' || c == '：' || c == ':') {
+        let t = token.trim_matches(|c: char| c == '[' || c == ']' || c == '(' || c == ')' || c == ',' || c == ';');
+        let raw = t.trim_start_matches('v').trim_start_matches('V');
+        if raw.split('.').filter(|x| !x.is_empty() && x.chars().all(|c| c.is_ascii_digit())).count() >= 2 {
+            return if t.starts_with('v') || t.starts_with('V') { t.to_string() } else { format!("v{}", raw) };
+        }
+    }
+    s.to_string()
+}
+
+fn parse_version_nums(value: &str) -> Option<Vec<u64>> {
+    let v = extract_version_text(value);
+    let raw = v.trim().trim_start_matches('v').trim_start_matches('V');
+    let nums: Vec<u64> = raw
+        .split('.')
+        .map(|part| part.chars().take_while(|c| c.is_ascii_digit()).collect::<String>())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<u64>().ok())
+        .collect();
+    if nums.len() >= 2 { Some(nums) } else { None }
+}
+
+fn remote_version_is_newer(current: &str, latest: &str) -> bool {
+    match (parse_version_nums(current), parse_version_nums(latest)) {
+        (Some(mut cur), Some(mut lat)) => {
+            let len = cur.len().max(lat.len());
+            cur.resize(len, 0);
+            lat.resize(len, 0);
+            lat > cur
+        }
+        _ => false,
+    }
+}
+
+fn should_show_update(current_candidates: &[&str], latest: &str) -> bool {
+    if parse_version_nums(latest).is_none() {
+        return false;
+    }
+    let parseable_currents: Vec<&str> = current_candidates
+        .iter()
+        .copied()
+        .filter(|v| parse_version_nums(v).is_some())
+        .collect();
+    !parseable_currents.is_empty()
+        && parseable_currents
+            .iter()
+            .all(|current| remote_version_is_newer(current, latest))
+}
 fn read_local_changelog() -> String {
     [
         format!("{}/CHANGELOG.md", workdir()),
@@ -185,7 +244,8 @@ async fn update_status(
 
     let fallback_current_hash = sh("git rev-parse --short HEAD").unwrap_or_else(|_| "unknown".into());
     let fallback_current_msg = sh("git log -1 --pretty=%s HEAD").unwrap_or_default();
-    let fallback_current_ver = first_heading(&local_changelog);
+    let local_current_version = first_heading(&local_changelog);
+    let fallback_current_ver = local_current_version.clone();
 
     let (current_version, current_hash, current_msg) = clean_installed(
         installed,
@@ -194,7 +254,10 @@ async fn update_status(
         fallback_current_msg,
     );
 
-    let has_update = current_hash != latest;
+    let latest_version = first_heading(&remote_changelog);
+    // 只按版本号判断是否存在新版本，避免同版本不同 commit 误判为“发现更新”。
+    // 同时参考数据库记录版本和本地 CHANGELOG 版本，避免 system_versions 记录滞后导致同版本误报。
+    let has_update = should_show_update(&[&current_version, &local_current_version], &latest_version);
     let log_content = tail_log();
     let running = fs::read_to_string(format!("{}/.auto_update_running", workdir()))
         .ok()
@@ -209,6 +272,7 @@ async fn update_status(
             .to_string();
         if !pid.is_empty() && pid != "1" {
             sh(&format!("kill -0 {} 2>/dev/null && echo yes || echo no", pid))
+                .unwrap_or_default()
                 .contains("yes")
         } else {
             true // 容器内可能无法 kill -0 宿主进程
@@ -240,7 +304,7 @@ async fn update_status(
         "current_message": current_msg,
         "latest_message": latest_msg,
         "current_version": current_version,
-        "latest_version": first_heading(&remote_changelog),
+        "latest_version": latest_version,
         "has_update": has_update,
         "running": running && pid_alive,
         "phase": phase,

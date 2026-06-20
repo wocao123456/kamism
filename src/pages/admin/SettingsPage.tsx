@@ -22,6 +22,28 @@ const MERCHANT_FEATURES = [
 
 function Chip({ active, children, onClick }: { active:boolean; children:React.ReactNode; onClick:()=>void }) { return <button onClick={onClick} className={`env-tab${active ? ' active' : ''}`}>{children}</button>; }
 function fmtDate(v?: string) { if (!v) return '从未检查'; const d = new Date(v); return Number.isNaN(d.getTime()) ? v : d.toLocaleString('zh-CN'); }
+
+function versionNums(value?: any) {
+  const m = String(value || '').match(/v?\d+(?:\.\d+){1,3}/)?.[0];
+  if (!m) return null;
+  return m.replace(/^v/i, '').split('.').map(n => Number(n || 0));
+}
+function remoteVersionNewer(current?: any, latest?: any) {
+  const cur = versionNums(current);
+  const lat = versionNums(latest);
+  if (!cur || !lat) return true;
+  const len = Math.max(cur.length, lat.length);
+  while (cur.length < len) cur.push(0);
+  while (lat.length < len) lat.push(0);
+  for (let i = 0; i < len; i++) {
+    if (lat[i] > cur[i]) return true;
+    if (lat[i] < cur[i]) return false;
+  }
+  return false;
+}
+function versionLabel(value?: any) {
+  return String(value || '').match(/v?\d+(?:\.\d+){1,3}/)?.[0] || '';
+}
 function usageClass(n?: number) { const v = Number(n || 0); return v >= 80 ? '#ef4444' : v >= 60 ? '#f59e0b' : '#10b981'; }
 function fmtBytes(bytes?: number) { const b=Number(bytes||0); if(!b) return '0 B'; const u=['B','KB','MB','GB','TB']; const i=Math.floor(Math.log(b)/Math.log(1024)); return `${(b/Math.pow(1024,i)).toFixed(1)} ${u[i]}`; }
 
@@ -32,6 +54,7 @@ export default function SettingsPage() {
   const isAdmin = role === 'admin';
   const [updateInfo, setUpdateInfo] = useState<any>(null);
   const [checking, setChecking] = useState(false);
+  const [statusRefreshing, setStatusRefreshing] = useState(false);
   const [autoUpdate, setAutoUpdate] = useState(false);
   const [lastCheckTime, setLastCheckTime] = useState('');
   const [systemInfo, setSystemInfo] = useState<any>({ hostname:'kamism', os:'Linux', arch:'x86_64', cpu_usage:0, num_cpu:0, memory_usage:0, memory_used:0, memory_total:0, disk_usage:0, disk_used:0, disk_total:0 });
@@ -39,6 +62,7 @@ export default function SettingsPage() {
   const [checkingHealth, setCheckingHealth] = useState(false);
   const pollRef = useRef<number | null>(null);
   const sysPollRef = useRef<number | null>(null);
+  const updateStatusPollRef = useRef<number | null>(null);
 
   // 新增：更新相关状态
   const [applying, setApplying] = useState(false);
@@ -66,6 +90,7 @@ export default function SettingsPage() {
 
   const stopPolling = () => { if (pollRef.current) { window.clearInterval(pollRef.current); pollRef.current = null; } };
   const stopSysPolling = () => { if (sysPollRef.current) { window.clearInterval(sysPollRef.current); sysPollRef.current = null; } };
+  const stopUpdateStatusPolling = () => { if (updateStatusPollRef.current) { window.clearInterval(updateStatusPollRef.current); updateStatusPollRef.current = null; } };
   const loadSystemInfo = async () => {
     try {
       const token = localStorage.getItem('token');
@@ -74,21 +99,23 @@ export default function SettingsPage() {
       setSystemInfo(json.data || json || {});
     } catch {}
   };
-  const checkForUpdates = async (silent = false) => {
+  const checkForUpdates = async (silent = false, allowAutoApply = false, recordCheck = !silent) => {
     if (!isAdmin) return;
     if (!silent) setChecking(true);
+    else setStatusRefreshing(true);
     try {
       const token = localStorage.getItem('token');
       const res = await fetch('/api/system-update/status', { headers: { Authorization: `Bearer ${token}` } });
       const json = await res.json();
       if (json.success) {
+        const responseHasUpdate = Boolean(json.data?.has_update && remoteVersionNewer(versionLabel(json.data?.current_version || json.data?.current), versionLabel(json.data?.latest_version || json.data?.latest)));
         setUpdateInfo(json.data);
         if (json.data?.running) {
           if (!applyingRef.current) { applyingRef.current = true; setApplying(true); }
           setProgressVisible(true);
           setProgressPhase(json.data.phase || 'running');
           setProgressMessage(json.data.phase_message || '更新中...');
-          if (!pollRef.current) pollRef.current = window.setInterval(() => checkForUpdates(true), 3000);
+          if (!pollRef.current) pollRef.current = window.setInterval(() => checkForUpdates(true, false, false), 3000);
         } else {
           if (applyingRef.current && !json.data?.running) {
             // 更新刚完成
@@ -100,27 +127,27 @@ export default function SettingsPage() {
             setTimeout(() => window.location.reload(), 3000);
           }
         }
-        if (!silent) {
+        if (recordCheck) {
           const nowIso=new Date().toISOString();
           setLastCheckTime(nowIso);
           localStorage.setItem('kamism_auto_update_last_check', nowIso);
         }
-        if (localStorage.getItem('kamism_auto_update_enabled')==='1' && json.data?.has_update && !json.data?.running) {
+        if (allowAutoApply && localStorage.getItem('kamism_auto_update_enabled')==='1' && responseHasUpdate && !json.data?.running) {
           fetch('/api/system-update/apply',{method:'POST',headers:{Authorization:`Bearer ${localStorage.getItem('token')}`}}).catch(()=>{});
         }
       }
       else if (!silent && res.status !== 403) toast.error(json.message || '检查更新失败');
     } catch { if (!silent && isAdmin) toast.error('检查更新失败'); }
-    finally { if (!silent) setChecking(false); }
+    finally { if (!silent) setChecking(false); else setStatusRefreshing(false); }
   };
 
   const applyUpdate = async () => {
     if (applying) { toast('更新任务已在进行中'); return; }
-    const msg = updateInfo?.has_update
-      ? `确认更新到 v${String(updateInfo.latest_version || '').match(/v?\d+(?:\.\d+){1,3}/)?.[0] || '最新版'}？\n\n系统将执行以下操作：\n1. 从 Git 拉取最新代码\n2. 重新构建 Docker 镜像\n3. 重启 app/web 容器\n4. 写入版本信息\n\n更新期间服务会短暂中断。`
+    const msg = displayHasUpdate
+      ? `确认更新到 ${versionLabel(updateInfo?.latest_version) || '最新版'}？\n\n系统将执行以下操作：\n1. 从 Git 拉取最新代码\n2. 重新构建 Docker 镜像\n3. 重启 app/web 容器\n4. 写入版本信息\n\n更新期间服务会短暂中断。`
       : '当前已是最新版本，无需更新。';
-    if (updateInfo?.has_update && !confirm(msg)) return;
-    if (!updateInfo?.has_update) { toast.success('当前已是最新版本'); return; }
+    if (displayHasUpdate && !confirm(msg)) return;
+    if (!displayHasUpdate) { toast.success('当前已是最新版本'); return; }
 
     setApplying(true);
     applyingRef.current = true;
@@ -134,7 +161,7 @@ export default function SettingsPage() {
       const json = await res.json();
       if (json.success) {
         toast.success('系统更新已开始');
-        if (!pollRef.current) pollRef.current = window.setInterval(() => checkForUpdates(true), 3000);
+        if (!pollRef.current) pollRef.current = window.setInterval(() => checkForUpdates(true, false, false), 3000);
       } else {
         setApplying(false);
         applyingRef.current = false;
@@ -161,9 +188,26 @@ export default function SettingsPage() {
       defer(() => adminApi.getSystemConfig().then((res) => { const data = res.data?.data || {}; const features = data['merchant.enabled_features']; if (Array.isArray(features)) setMerchantFeatures(features); else setMerchantFeatures(MERCHANT_FEATURES.map(([k]) => k)); setMerchantPageEnabled(data['merchant.page_enabled'] !== false); setRegisterEnabled(data['auth.register_enabled'] !== false); const active = document.activeElement as HTMLElement | null; const editing = !!active && ['INPUT','TEXTAREA','SELECT'].includes(active.tagName); if (data['mail.smtp'] && !editing) setSmtp((prev:any) => ({ ...prev, ...data['mail.smtp'] })); }).catch(() => {}), 700);
       defer(() => { loadSystemInfo(); if (!sysPollRef.current) sysPollRef.current = window.setInterval(loadSystemInfo, 5000); }, 1000);
       defer(() => fetch('/api/system/health-full',{headers:{Authorization:`Bearer ${localStorage.getItem('token')}`}}).then(r=>r.json()).then(j=>setHealthInfo(j.data||j||{})).catch(()=>{}), 1200);
-      const au = localStorage.getItem('kamism_auto_update_enabled') === '1'; setAutoUpdate(au); const lc = localStorage.getItem('kamism_auto_update_last_check') || ''; if (lc) setLastCheckTime(lc); if (au && (!lc || Date.now()-new Date(lc).getTime()>=86400000)) { defer(() => checkForUpdates(false), 1600); }
+      const au = localStorage.getItem('kamism_auto_update_enabled') === '1';
+      setAutoUpdate(au);
+      const lc = localStorage.getItem('kamism_auto_update_last_check') || '';
+      if (lc) setLastCheckTime(lc);
+      // 进入页面后先静默刷新一次状态，避免“当前状态”一直停留在旧缓存。
+      defer(() => checkForUpdates(true, false, false), 1600);
+      // 状态每 60 秒刷新一次；只有自动更新开启且距离上次检查超过 24 小时时，才允许自动执行更新。
+      if (!updateStatusPollRef.current) {
+        updateStatusPollRef.current = window.setInterval(() => {
+          const enabled = localStorage.getItem('kamism_auto_update_enabled') === '1';
+          const last = localStorage.getItem('kamism_auto_update_last_check') || '';
+          const due = enabled && (!last || Date.now() - new Date(last).getTime() >= 86400000);
+          checkForUpdates(true, due, due);
+        }, 60000);
+      }
+      if (au && (!lc || Date.now()-new Date(lc).getTime()>=86400000)) {
+        defer(() => checkForUpdates(true, true, true), 2200);
+      }
     }
-    return () => { stopPolling(); stopSysPolling(); };
+    return () => { stopPolling(); stopSysPolling(); stopUpdateStatusPolling(); };
   }, []);
 
   useEffect(() => {
@@ -176,7 +220,9 @@ export default function SettingsPage() {
     ...(isAdmin ? [{ key: 'admin', label: '管理员设置', icon: <SlidersHorizontal size={15} /> }] : []),
   ];
   const rawVersion = updateInfo?.current_version || updateInfo?.current || '1.5.0';
-  const currentVersion = String(rawVersion).match(/v?\d+(?:\.\d+){1,3}/)?.[0].replace(/^v/,'') || '1.5.0';
+  const currentVersion = versionLabel(rawVersion).replace(/^v/i,'') || '1.5.0';
+  const latestVersion = versionLabel(updateInfo?.latest_version || updateInfo?.latest);
+  const displayHasUpdate = Boolean(updateInfo?.has_update && remoteVersionNewer(currentVersion, latestVersion));
   const nextCheck = lastCheckTime ? new Date(new Date(lastCheckTime).getTime()+86400000).toLocaleString('zh-CN') : '-';
   const mailFields: Record<string, { label: string; placeholder: string; help: string; type?: string }> = {
     smtp_host: { label: 'SMTP 服务器地址', placeholder: '例如：smtp.qq.com、smtp.163.com、smtp.gmail.com', help: '填写邮箱服务商提供的 SMTP_HOST，不要填写 http:// 或 https://。' },
@@ -214,17 +260,17 @@ export default function SettingsPage() {
                 <div className="hero-tech" style={{fontSize:15,fontWeight:700,color:'var(--t2)',lineHeight:1.2,whiteSpace:'nowrap'}}>Rust + React</div>
               </div>
             </div>
-            {updateInfo?.has_update && (
+            {displayHasUpdate && (
               <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:8,marginBottom:18,padding:'10px 16px',borderRadius:12,background:'rgba(59,130,246,.08)',border:'1px solid rgba(59,130,246,.18)'}}>
                 <Download size={16} color="#3b82f6"/>
-                <span style={{fontSize:13,fontWeight:700,color:'#3b82f6'}}>发现新版本 v{String(updateInfo.latest_version || '').match(/v?\d+(?:\.\d+){1,3}/)?.[0] || ''}</span>
+                <span style={{fontSize:13,fontWeight:700,color:'#3b82f6'}}>发现新版本 {latestVersion}</span>
                 <span style={{fontSize:12,color:'var(--t3)'}}>· {updateInfo.latest_message}</span>
                 <button onClick={()=>setChangelogVisible(true)} style={{border:0,background:'transparent',color:'#3b82f6',cursor:'pointer',fontSize:12,fontWeight:700,display:'flex',alignItems:'center',gap:2}}>更新日志<ChevronRight size={13}/></button>
               </div>
             )}
             <div className="hero-actions-k" style={{display:'flex',gap:14,justifyContent:'center',flexWrap:'wrap'}}>
               <button className="pill-btn" onClick={()=>checkForUpdates()} disabled={checking} style={{background:'#3da0f5',color:'#fff',padding:'0 30px'}}><RefreshCw className={`refresh-icon ${checking?'spin':''}`} size={18}/>{checking?'检查中...':'检查更新'}</button>
-              {updateInfo?.has_update && (
+              {displayHasUpdate && (
                 <button className="pill-btn" onClick={applyUpdate} disabled={applying} style={{background:applying?'#94a3b8':'#10b981',color:'#fff',padding:'0 30px'}}>
                   {applying ? <><Loader2 className="spin" size={18}/> 更新中...</> : <><Download size={18}/> 一键更新</>}
                 </button>
@@ -241,10 +287,10 @@ export default function SettingsPage() {
           <div className="update-switch-card" style={{display:'flex',alignItems:'center',gap:14,padding:16,borderRadius:14,background:'linear-gradient(135deg,rgba(24,144,255,.08),rgba(54,207,201,.06))',border:'1px solid rgba(59,130,246,.12)',marginBottom:18}}>
             <div style={{width:42,height:42,borderRadius:13,background:'linear-gradient(135deg,#1890ff,#36cfc9)',display:'flex',alignItems:'center',justifyContent:'center',color:'#fff',boxShadow:'0 4px 12px rgba(24,144,255,.28)'}}><RefreshCw className="refresh-icon" size={22}/></div>
             <div style={{flex:1,minWidth:0}}><div style={{fontWeight:800,marginBottom:4}}>自动更新</div><div style={{fontSize:13,color:'var(--t2)',lineHeight:1.55}}>每 24 小时自动检查一次新版本，检测到新版本后会在空闲时段尝试更新。</div></div>
-            <label style={{display:'flex',alignItems:'center',gap:8,fontWeight:700}}><input type="checkbox" checked={autoUpdate} onChange={e=>{const v=e.target.checked; setAutoUpdate(v); localStorage.setItem('kamism_auto_update_enabled', v?'1':'0'); if(v){ checkForUpdates().then(()=>{localStorage.setItem('kamism_auto_update_last_check', new Date().toISOString());}); }}} style={{width:18,height:18,accentColor:'#3da0f5'}}/>{autoUpdate?'开':'关'}</label>
+            <label style={{display:'flex',alignItems:'center',gap:8,fontWeight:700}}><input type="checkbox" checked={autoUpdate} onChange={e=>{const v=e.target.checked; setAutoUpdate(v); localStorage.setItem('kamism_auto_update_enabled', v?'1':'0'); if(v){ checkForUpdates(false, true, true); }}} style={{width:18,height:18,accentColor:'#3da0f5'}}/>{autoUpdate?'开':'关'}</label>
           </div>
           <div className="update-foot" style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:14}}>
-            {[[ '#3b82f6','最后检查时间',fmtDate(lastCheckTime) ],[ '#10b981','当前状态', updateInfo?.has_update?'发现新版本':'系统已是最新版本' ],[ '#36cfc9','下次检查时间',nextCheck ]].map(([c,l,v])=><div key={l} style={{display:'flex',gap:9,alignItems:'flex-start'}}><span style={{width:8,height:8,borderRadius:'50%',background:c,boxShadow:`0 0 0 3px ${c}22`,marginTop:5}}/><div><div style={{fontSize:12,color:'var(--t3)'}}>{l}</div><div style={{fontSize:13,fontWeight:700,color:l==='当前状态'?'#10b981':'var(--t2)'}}>{v}</div></div></div>)}
+            {[[ '#3b82f6','最后检查时间',fmtDate(lastCheckTime) ],[ '#10b981','当前状态', (checking || statusRefreshing)?'检查中...':(updateInfo ? (updateInfo.has_update?'发现新版本':'系统已是最新版本') : '未检查') ],[ '#36cfc9','下次检查时间',nextCheck ]].map(([c,l,v])=><div key={l} style={{display:'flex',gap:9,alignItems:'flex-start'}}><span style={{width:8,height:8,borderRadius:'50%',background:c,boxShadow:`0 0 0 3px ${c}22`,marginTop:5}}/><div><div style={{fontSize:12,color:'var(--t3)'}}>{l}</div><div style={{fontSize:13,fontWeight:700,color:l==='当前状态'?'#10b981':'var(--t2)'}}>{v}</div></div></div>)}
           </div>
           {updateInfo?.log && (
             <div style={{marginTop:16}}>
@@ -275,7 +321,7 @@ export default function SettingsPage() {
                 </div>
               )}
               {progressPhase === 'error' && (
-                <button onClick={()=>{ setProgressVisible(false); setApplying(false); applyingRef.current = false; }} style={{height:40,padding:'0 28px',border:0,borderRadius:12,background:'#f1f5f9',color:'#475569',fontWeight:700,cursor:'pointer',fontSize:14}}>关闭</button>
+                <button onClick={()=>{ setProgressVisible(false); setApplying(false); applyingRef.current = false; }} style={{height:40,padding:'0 28px',border:0,borderRadius:12,background:'var(--fc,#f1f5f9)',color:'var(--t2)',fontWeight:700,cursor:'pointer',fontSize:14}}>关闭</button>
               )}
             </div>
           </div>
@@ -284,15 +330,15 @@ export default function SettingsPage() {
         {/* 更新日志弹窗 */}
         {changelogVisible && (
           <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.45)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={(e)=>{ if(e.target===e.currentTarget) setChangelogVisible(false); }}>
-            <div style={{background:'#fff',borderRadius:20,padding:'28px 32px',maxWidth:560,maxHeight:'70vh',width:'calc(100% - 32px)',boxShadow:'0 24px 70px rgba(0,0,0,.18)',display:'flex',flexDirection:'column'}} onClick={e=>e.stopPropagation()}>
+            <div style={{background:'var(--c,#fff)',border:'1px solid var(--bd,#edf0f5)',borderRadius:20,padding:'28px 32px',maxWidth:560,maxHeight:'70vh',width:'calc(100% - 32px)',boxShadow:'0 24px 70px rgba(0,0,0,.28)',display:'flex',flexDirection:'column'}} onClick={e=>e.stopPropagation()}>
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:16}}>
-                <h3 style={{margin:0,fontSize:18,fontWeight:900,color:'#0f172a'}}>更新日志</h3>
+                <h3 style={{margin:0,fontSize:18,fontWeight:900,color:'var(--t1)'}}>更新日志</h3>
                 <button onClick={()=>setChangelogVisible(false)} style={{border:0,background:'transparent',cursor:'pointer',padding:4}}><X size={20} color="#94a3b8"/></button>
               </div>
-              <pre style={{margin:0,flex:1,overflow:'auto',fontSize:13,lineHeight:1.7,color:'#475569',whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{updateInfo?.changelog || '暂无更新日志'}</pre>
+              <pre style={{margin:0,flex:1,overflow:'auto',fontSize:13,lineHeight:1.7,color:'var(--t2)',background:'var(--fc,transparent)',border:'1px solid var(--bd,#edf0f5)',borderRadius:12,padding:'12px 14px',whiteSpace:'pre-wrap',wordBreak:'break-word'}}>{updateInfo?.changelog || '暂无更新日志'}</pre>
               <div style={{display:'flex',gap:12,marginTop:20,justifyContent:'flex-end'}}>
-                <button onClick={()=>setChangelogVisible(false)} style={{height:40,padding:'0 24px',border:0,borderRadius:12,background:'#f1f5f9',color:'#475569',fontWeight:700,cursor:'pointer',fontSize:14}}>关闭</button>
-                {updateInfo?.has_update && <button onClick={()=>{ setChangelogVisible(false); applyUpdate(); }} style={{height:40,padding:'0 24px',border:0,borderRadius:12,background:'#10b981',color:'#fff',fontWeight:700,cursor:'pointer',fontSize:14,display:'flex',alignItems:'center',gap:8}}><Download size={16}/> 立即更新</button>}
+                <button onClick={()=>setChangelogVisible(false)} style={{height:40,padding:'0 24px',border:0,borderRadius:12,background:'var(--fc,#f1f5f9)',color:'var(--t2)',fontWeight:700,cursor:'pointer',fontSize:14}}>关闭</button>
+                {displayHasUpdate && <button onClick={()=>{ setChangelogVisible(false); applyUpdate(); }} style={{height:40,padding:'0 24px',border:0,borderRadius:12,background:'#10b981',color:'#fff',fontWeight:700,cursor:'pointer',fontSize:14,display:'flex',alignItems:'center',gap:8}}><Download size={16}/> 立即更新</button>}
               </div>
             </div>
           </div>

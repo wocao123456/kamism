@@ -2,6 +2,15 @@
 
 所有重要变更都会记录在此文件中。
 格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，项目遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
+## [v1.5.1] - 2026-06-20
+### 修复
+- **修复同版本误报更新**：后端 `has_update` 判断改为同时参考数据库记录版本和本地 CHANGELOG 版本，避免 `system_versions` 记录滞后导致 `v1.5.0` 仍提示「发现新版本 v1.5.0」。
+- **前端版本号兜底**：新增 `remoteVersionNewer()` 前端版本比较函数，即使后端返回 `has_update: true`，只要前端解析到当前版本与远程版本相同，也不显示「发现新版本」和「一键更新」按钮。
+- **修复 `sh()` 返回值编译错误**：`system_update.rs` 中 `sh().contains("yes")` 改为 `sh().unwrap_or_default().contains("yes")`，修复 `Result<String, String>` 不能直接调用 `.contains()` 的编译错误。
+### 优化
+- **更新日志弹窗暗黑模式适配**：弹窗背景、文字、内容区、关闭按钮全部改用 CSS 变量（`var(--c)`、`var(--t1)`、`var(--t2)`、`var(--fc)`、`var(--bd)`），暗黑模式下不再白底灰字。
+- **后端版本判断更严谨**：新增 `should_show_update()` 函数，收集所有可解析的当前版本（数据库记录 + 本地 CHANGELOG），远程版本必须大于所有当前版本才提示更新。
+---
 
 ## [v1.5.0] - 2026-06-10
 
