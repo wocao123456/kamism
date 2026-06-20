@@ -17,7 +17,7 @@ ARG CACHEBUST=1
 RUN echo "cachebust=${CACHEBUST}" > /tmp/kamism-cachebust
 COPY src ./src
 COPY public ./public
-
+COPY CHANGELOG.md ./public/CHANGELOG.md
 # 构建时注入后端 API 地址（用户在 .env 中配置 VITE_API_URL）
 ARG VITE_API_URL=http://localhost:9527
 ENV VITE_API_URL=$VITE_API_URL

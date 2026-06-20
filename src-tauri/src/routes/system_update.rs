@@ -254,10 +254,14 @@ async fn update_status(
         fallback_current_hash.clone(),
         fallback_current_msg.clone(),
     );
+    // 优先使用较新的一方：如果本地 CHANGELOG 版本 >= 数据库记录版本，以 CHANGELOG 为准
+    // （CHANGELOG 是构建时真实写入的，system_versions 可能因更新流程中断而滞后）
     let current_version = if remote_version_is_newer(&db_version, &local_current_version) {
-        db_version
-    } else {
+        // CHANGELOG 版本 > DB 版本，以 CHANGELOG 为准
         local_current_version.clone()
+    } else {
+        // DB 版本 >= CHANGELOG 版本（或无法比较），以 DB 为准
+        db_version
     };
     let current_hash = if &current_version == &local_current_version {
         fallback_current_hash
@@ -334,7 +338,11 @@ async fn apply_update(Extension(claims): Extension<Claims>) -> Response {
     if let Some(r) = admin_only(&claims) {
         return r;
     }
-
+    // 立即写入 running 标记，防止前端轮询时状态返回 idle 导致误判"更新完成"
+    let marker = format!("{}/.auto_update_running", workdir());
+    let _ = fs::write(&marker, "1");
+    // 立即清空旧日志，让前端看到全新的日志流
+    let _ = fs::write(&format!("{}/.auto_update_cron.log", workdir()), "update start\n");
     let cmd = format!(
         "docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v {0}:{0} -w {0} -e DATABASE_URL=\"$DATABASE_URL\" docker:27-cli sh -lc 'apk add --no-cache git bash postgresql-client >/dev/null && : > {0}/.auto_update_cron.log && bash {0}/auto_update.sh' >/tmp/kamism_update_trigger.log 2>&1 &",
         hostdir()

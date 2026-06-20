@@ -49,13 +49,29 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const defaultFeatures = ['dashboard','apps','cards','activations','recharge','messages','blacklist','agents','api_docs','api_manage'];
   const [enabledFeatures, setEnabledFeatures] = useState<string[]>(defaultFeatures);
   const [merchantPageEnabled, setMerchantPageEnabled] = useState(true);
-  const [appVersion, setAppVersion] = useState('1.5.0');
-  // 读取本地 CHANGELOG 获取当前版本号
+  const [appVersion, setAppVersion] = useState('2.0.3');
+  // 读取版本号：优先 API → 其次 CHANGELOG.md → 兜底硬编码
   useEffect(() => {
-    fetch('/CHANGELOG.md').then(r=>r.text()).then(t=>{
+    const token = localStorage.getItem('token');
+    // 尝试从 API 获取实时版本（最可靠）
+    if (token) {
+      fetch('/api/system-update/status', { headers: { Authorization: `Bearer ${token}` } })
+        .then(r => r.json()).then(j => {
+          if (j.success && j.data?.current_version) {
+            const v = String(j.data.current_version).match(/v?\d+(?:\.\d+){1,3}/)?.[0] || '';
+            if (v) { setAppVersion(v); localStorage.setItem('kamism_version', v); }
+          }
+        }).catch(() => {});
+    }
+    // 同时从 CHANGELOG.md 读取作为备用
+    fetch('/CHANGELOG.md').then(r => { if (!r.ok) throw new Error(); return r.text(); }).then(t => {
       const m = t.match(/## \[([^\]]+)\]/);
-      if (m) setAppVersion(m[1]);
-    }).catch(()=>{});
+      if (m) { setAppVersion(m[1]); localStorage.setItem('kamism_version', m[1]); }
+    }).catch(() => {
+      // CHANGELOG.md 不可用时，从 localStorage 恢复上次版本
+      const cached = localStorage.getItem('kamism_version');
+      if (cached) setAppVersion(cached);
+    });
   }, []);
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
   const setLastEvent = useWsEventStore((s) => s.setLastEvent);

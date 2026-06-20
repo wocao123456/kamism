@@ -108,31 +108,53 @@ export default function SettingsPage() {
       const res = await fetch('/api/system-update/status', { headers: { Authorization: `Bearer ${token}` } });
       const json = await res.json();
       if (json.success) {
-        const responseHasUpdate = Boolean(json.data?.has_update && remoteVersionNewer(versionLabel(json.data?.current_version || json.data?.current), versionLabel(json.data?.latest_version || json.data?.latest)));
-        setUpdateInfo(json.data);
-        if (json.data?.running) {
+        const data = json.data;
+        const responseHasUpdate = Boolean(data?.has_update && remoteVersionNewer(versionLabel(data?.current_version || data?.current), versionLabel(data?.latest_version || data?.latest)));
+        setUpdateInfo(data);
+
+        // 判断是否真正在更新中：running=true 且进程存活
+        const isReallyRunning = Boolean(data?.running);
+
+        if (isReallyRunning) {
+          // 更新正在运行中
           if (!applyingRef.current) { applyingRef.current = true; setApplying(true); }
           setProgressVisible(true);
-          setProgressPhase(json.data.phase || 'running');
-          setProgressMessage(json.data.phase_message || '更新中...');
-          if (!pollRef.current) pollRef.current = window.setInterval(() => checkForUpdates(true, false, false), 3000);
-        } else {
-          if (applyingRef.current && !json.data?.running) {
-            // 更新刚完成
-            applyingRef.current = false;
-            setApplying(false);
+          // 使用后端返回的真实阶段信息
+          const phase = data.phase || 'running';
+          const phaseMsg = data.phase_message || '更新中...';
+          setProgressPhase(phase);
+          setProgressMessage(phaseMsg);
+          // 更新中每 5 秒轮询一次（不要太频繁）
+          if (!pollRef.current) pollRef.current = window.setInterval(() => checkForUpdates(true, false, false), 5000);
+        } else if (applyingRef.current) {
+          // 之前在更新中，现在 running=false → 检查是否完成或失败
+          applyingRef.current = false;
+          setApplying(false);
+          stopPolling();
+
+          // 从日志判断最终状态
+          const log = data?.log || '';
+          const hasError = log.includes('error') || log.includes('failed') || log.includes('失败') || log.includes('ERR');
+          const hasUpdateEnd = log.includes('update end') || log.includes('[6/6]');
+
+          if (hasError && !hasUpdateEnd) {
+            // 更新失败
+            setProgressPhase('error');
+            setProgressMessage('更新失败，请查看更新日志了解详情');
+          } else {
+            // 更新完成
             setProgressPhase('done');
             setProgressMessage('更新完成，页面即将刷新...');
-            stopPolling();
             setTimeout(() => window.location.reload(), 3000);
           }
         }
+
         if (recordCheck) {
-          const nowIso=new Date().toISOString();
+          const nowIso = new Date().toISOString();
           setLastCheckTime(nowIso);
           localStorage.setItem('kamism_auto_update_last_check', nowIso);
         }
-        if (allowAutoApply && localStorage.getItem('kamism_auto_update_enabled')==='1' && responseHasUpdate && !json.data?.running) {
+        if (allowAutoApply && localStorage.getItem('kamism_auto_update_enabled')==='1' && responseHasUpdate && !isReallyRunning) {
           fetch('/api/system-update/apply',{method:'POST',headers:{Authorization:`Bearer ${localStorage.getItem('token')}`}}).catch(()=>{});
         }
       }
@@ -154,6 +176,8 @@ export default function SettingsPage() {
     setProgressVisible(true);
     setProgressPhase('preparing');
     setProgressMessage('正在提交更新任务...');
+    // 清空旧的更新日志显示
+    setUpdateInfo((prev: any) => prev ? { ...prev, log: '' } : prev);
 
     try {
       const token = localStorage.getItem('token');
@@ -219,8 +243,8 @@ export default function SettingsPage() {
     { key: 'basic', label: '基础设置', icon: <Upload size={15} /> },
     ...(isAdmin ? [{ key: 'admin', label: '管理员设置', icon: <SlidersHorizontal size={15} /> }] : []),
   ];
-  const rawVersion = updateInfo?.current_version || updateInfo?.current || '2.0.0';
-  const currentVersion = versionLabel(rawVersion).replace(/^v/i,'') || '2.0.0';
+  const rawVersion = updateInfo?.current_version || updateInfo?.current || '2.0.3';
+  const currentVersion = versionLabel(rawVersion).replace(/^v/i,'') || '2.0.3';
   const latestVersion = versionLabel(updateInfo?.latest_version || updateInfo?.latest);
   const displayHasUpdate = Boolean(updateInfo?.has_update && remoteVersionNewer(currentVersion, latestVersion));
   const nextCheck = lastCheckTime ? new Date(new Date(lastCheckTime).getTime()+86400000).toLocaleString('zh-CN') : '-';
@@ -290,7 +314,7 @@ export default function SettingsPage() {
             <label style={{display:'flex',alignItems:'center',gap:8,fontWeight:700}}><input type="checkbox" checked={autoUpdate} onChange={e=>{const v=e.target.checked; setAutoUpdate(v); localStorage.setItem('kamism_auto_update_enabled', v?'1':'0'); if(v){ checkForUpdates(false, true, true); }}} style={{width:18,height:18,accentColor:'#3da0f5'}}/>{autoUpdate?'开':'关'}</label>
           </div>
           <div className="update-foot" style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:14}}>
-            {[[ '#3b82f6','最后检查时间',fmtDate(lastCheckTime) ],[ '#10b981','当前状态', (checking || statusRefreshing)?'检查中...':(updateInfo ? (updateInfo.has_update?'发现新版本':'系统已是最新版本') : '未检查') ],[ '#36cfc9','下次检查时间',nextCheck ]].map(([c,l,v])=><div key={l} style={{display:'flex',gap:9,alignItems:'flex-start'}}><span style={{width:8,height:8,borderRadius:'50%',background:c,boxShadow:`0 0 0 3px ${c}22`,marginTop:5}}/><div><div style={{fontSize:12,color:'var(--t3)'}}>{l}</div><div style={{fontSize:13,fontWeight:700,color:l==='当前状态'?'#10b981':'var(--t2)'}}>{v}</div></div></div>)}
+            {[[ '#3b82f6','最后检查时间',fmtDate(lastCheckTime) ],[ '#10b981','当前状态', applying ? (progressMessage || '更新中...') : ((checking || statusRefreshing)?'检查中...':(updateInfo ? (updateInfo.has_update?'发现新版本':'系统已是最新版本') : '未检查')) ],[ '#36cfc9','下次检查时间',nextCheck ]].map(([c,l,v])=><div key={l} style={{display:'flex',gap:9,alignItems:'flex-start'}}><span style={{width:8,height:8,borderRadius:'50%',background:l==='当前状态' && applying ? '#f59e0b' : String(c),boxShadow:`0 0 0 3px ${(l==='当前状态' && applying ? '#f59e0b' : String(c))}22`,marginTop:5}}/><div><div style={{fontSize:12,color:'var(--t3)'}}>{l}</div><div style={{fontSize:13,fontWeight:700,color:l==='当前状态'?(applying?'#f59e0b':'#10b981'):'var(--t2)'}}>{v}</div></div></div>)}
           </div>
           {updateInfo?.log && (
             <div style={{marginTop:16}}>
@@ -303,7 +327,7 @@ export default function SettingsPage() {
         {/* 更新进度弹窗 */}
         {progressVisible && (
           <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,.45)',zIndex:9999,display:'flex',alignItems:'center',justifyContent:'center'}} onClick={(e)=>{ if(e.target===e.currentTarget && progressPhase!=='done' && progressPhase!=='error') setProgressVisible(false); }}>
-            <div style={{background:'#fff',borderRadius:20,padding:'36px 32px',maxWidth:440,width:'calc(100% - 32px)',boxShadow:'0 24px 70px rgba(0,0,0,.18)',textAlign:'center'}} onClick={e=>e.stopPropagation()}>
+            <div style={{background:'var(--c,#fff)',borderRadius:20,padding:'36px 32px',maxWidth:520,width:'calc(100% - 32px)',boxShadow:'0 24px 70px rgba(0,0,0,.18)',textAlign:'center'}} onClick={e=>e.stopPropagation()}>
               {progressPhase === 'done' ? (
                 <div style={{width:64,height:64,borderRadius:'50%',background:'#10b981',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 20px'}}><CheckCircle2 size={32} color="#fff"/></div>
               ) : progressPhase === 'error' ? (
@@ -311,8 +335,8 @@ export default function SettingsPage() {
               ) : (
                 <div style={{width:64,height:64,borderRadius:'50%',background:'linear-gradient(135deg,#3b82f6,#06b6d4)',display:'flex',alignItems:'center',justifyContent:'center',margin:'0 auto 20px'}}><Loader2 className="spin" size={32} color="#fff"/></div>
               )}
-              <h3 style={{margin:'0 0 12px',fontSize:20,fontWeight:900,color:'#0f172a'}}>{progressPhase === 'done' ? '更新完成' : progressPhase === 'error' ? '更新失败' : '正在更新系统'}</h3>
-              <p style={{margin:'0 0 24px',fontSize:14,color:'#64748b',lineHeight:1.6}}>{progressMessage}</p>
+              <h3 style={{margin:'0 0 12px',fontSize:20,fontWeight:900,color:'var(--t1,#0f172a)'}}>{progressPhase === 'done' ? '更新完成' : progressPhase === 'error' ? '更新失败' : '正在更新系统'}</h3>
+              <p style={{margin:'0 0 24px',fontSize:14,color:'var(--t2,#64748b)',lineHeight:1.6}}>{progressMessage}</p>
               {progressPhase !== 'done' && progressPhase !== 'error' && (
                 <div style={{display:'flex',alignItems:'center',justifyContent:'center',gap:8,marginBottom:16}}>
                   <div style={{width:200,height:6,borderRadius:3,background:'#e5e7eb',overflow:'hidden'}}>
@@ -320,8 +344,16 @@ export default function SettingsPage() {
                   </div>
                 </div>
               )}
+              {/* 更新中实时显示日志 */}
+              {progressPhase !== 'done' && progressPhase !== 'error' && updateInfo?.log && (
+                <div style={{marginTop:12,maxHeight:160,overflow:'auto',background:'var(--fc,#f8fafc)',border:'1px solid var(--bd,#edf0f5)',borderRadius:12,padding:'10px 14px',fontSize:11,lineHeight:1.5,color:'var(--t2)',whiteSpace:'pre-wrap',wordBreak:'break-word',textAlign:'left'}}>{updateInfo.log}</div>
+              )}
+              {/* 更新失败时也显示日志 */}
+              {progressPhase === 'error' && updateInfo?.log && (
+                <div style={{marginTop:12,maxHeight:160,overflow:'auto',background:'var(--fc,#f8fafc)',border:'1px solid var(--bd,#edf0f5)',borderRadius:12,padding:'10px 14px',fontSize:11,lineHeight:1.5,color:'var(--t2)',whiteSpace:'pre-wrap',wordBreak:'break-word',textAlign:'left'}}>{updateInfo.log}</div>
+              )}
               {progressPhase === 'error' && (
-                <button onClick={()=>{ setProgressVisible(false); setApplying(false); applyingRef.current = false; }} style={{height:40,padding:'0 28px',border:0,borderRadius:12,background:'var(--fc,#f1f5f9)',color:'var(--t2)',fontWeight:700,cursor:'pointer',fontSize:14}}>关闭</button>
+                <button onClick={()=>{ setProgressVisible(false); setApplying(false); applyingRef.current = false; }} style={{height:40,padding:'0 28px',border:0,borderRadius:12,background:'var(--fc,#f1f5f9)',color:'var(--t2)',fontWeight:700,cursor:'pointer',fontSize:14,marginTop:16}}>关闭</button>
               )}
             </div>
           </div>
