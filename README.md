@@ -230,26 +230,6 @@ git clone https://github.com/wocao123456/kamism.git
 cd kamism
 ```
 
-### 第二步：配置环境变量
-
-```bash
-cp env.example .env
-nano .env
-```
-
-`.env` 必填字段：
-
-```env
-POSTGRES_PASSWORD=强密码
-RABBITMQ_PASSWORD=强密码
-JWT_SECRET=随机32位以上字符串
-ADMIN_EMAIL=admin@example.com
-ADMIN_PASSWORD=Admin@123456
-MASTER_KEY=64位16进制字符串（openssl rand -hex 32）
-```
-
-完整字段说明见 `env.example`。
-
 ---
 
 ### 方式一：单容器部署
